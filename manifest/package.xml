@@ -5,6 +5,10 @@
 		<members>ConfigServiceTest</members>
 		<members>MetadataRetriever</members>
 		<members>MetadataRetrieverTest</members>
+		<members>ObjectFieldController</members>
+		<members>ObjectFieldControllerTest</members>
+		<members>UserSearchController</members>
+		<members>UserSearchControllerTest</members>
 		<name>ApexClass</name>
 	</types>
 	<types>
@@ -48,6 +52,12 @@
 		<members>Diagnostic_Config__mdt-Diagnostic Config Layout</members>
 		<members>Diagnostic_Request__c-Diagnostic Request Layout</members>
 		<name>Layout</name>
+	</types>
+	<types>
+		<members>diagnosticToolComponent</members>
+		<members>objectFieldSelector</members>
+		<members>userSearchComponent</members>
+		<name>LightningComponentBundle</name>
 	</types>
 	<types>
 		<members>Diagnostic_Cache__c.Expiry_After_Refresh</members>
