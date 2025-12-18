@@ -1,0 +1,33 @@
+.object-field-selector {
+    min-height: 250px;
+}
+
+lightning-combobox {
+    width: 100%;
+}
+
+.slds-dl_horizontal dt {
+    width: 30%;
+}
+
+.slds-dl_horizontal dd {
+    width: 70%;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .slds-dl_horizontal dt {
+        width: 100%;
+    }
+    
+    .slds-dl_horizontal dd {
+        width: 100%;
+        margin-left: 0;
+        margin-bottom: 0.5rem;
+    }
+}
+
+/* Custom styling for selection summary */
+.slds-box.slds-theme_default {
+    background-color: var(--slds-g-color-neutral-base-95, #f3f3f3);
+}

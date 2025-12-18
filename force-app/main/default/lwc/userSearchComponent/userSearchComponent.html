@@ -1,0 +1,215 @@
+<template>
+    <div class="slds-box slds-box_small user-search-container">
+        
+        <!-- Search Input Section -->
+        <div class="slds-form-element">
+            <label class="slds-form-element__label" for="user-search-input">
+                <abbr class="slds-required" title="required">*</abbr>
+                Search for User
+            </label>
+            <div class="slds-form-element__control">
+                <lightning-input
+                    id="user-search-input"
+                    type="search"
+                    placeholder="Search by name or username..."
+                    value={searchTerm}
+                    onchange={handleSearchChange}
+                    variant="label-hidden"
+                    class="search-input">
+                </lightning-input>
+            </div>
+            <div class="slds-form-element__help slds-m-top_xx-small">
+                Enter at least 2 characters to search
+            </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <template if:true={isSearching}>
+            <div class="slds-m-top_medium slds-text-align_center">
+                <lightning-spinner 
+                    alternative-text="Searching..." 
+                    size="small">
+                </lightning-spinner>
+                <p class="slds-m-top_small">Searching users...</p>
+            </div>
+        </template>
+
+        <!-- Search Results -->
+        <template if:true={showResults}>
+            <div class="slds-m-top_medium">
+                <h3 class="slds-text-heading_small slds-m-bottom_small">
+                    Search Results ({searchResults.length})
+                </h3>
+                <div class="search-results-container">
+                    <template for:each={userResults} for:item="user">
+                        <div 
+                            key={user.id} 
+                            class="slds-box slds-box_x-small slds-m-bottom_x-small user-result-item"
+                            data-userid={user.id}
+                            onclick={handleUserSelect}>
+                            
+                            <div class="slds-media">
+                                <!-- User Avatar -->
+                                <div class="slds-media__figure">
+                                    <lightning-avatar
+                                        src={user.smallPhotoUrl}
+                                        fallback-icon-name="standard:user"
+                                        alternative-text={user.name}
+                                        size="medium">
+                                    </lightning-avatar>
+                                </div>
+                                
+                                <!-- User Info -->
+                                <div class="slds-media__body">
+                                    <div class="slds-grid slds-grid_align-spread">
+                                        <div class="slds-col">
+                                            <h4 class="slds-text-heading_small">
+                                                {user.name}
+                                            </h4>
+                                            <p class="slds-text-body_small slds-text-color_weak">
+                                                {user.username}
+                                            </p>
+                                        </div>
+                                        <div class="slds-col slds-no-flex slds-align-middle">
+                                            <span class={user.statusClass}>
+                                                {user.statusLabel}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="slds-m-top_x-small">
+                                        <lightning-icon 
+                                            icon-name="standard:user" 
+                                            size="x-small"
+                                            class="slds-m-right_xx-small">
+                                        </lightning-icon>
+                                        <span class="slds-text-body_small">
+                                            {user.profileName}
+                                        </span>
+                                    </div>
+                                    
+                                    <div class="slds-m-top_xx-small">
+                                        <lightning-icon 
+                                            icon-name="utility:clock" 
+                                            size="x-small"
+                                            class="slds-m-right_xx-small">
+                                        </lightning-icon>
+                                        <span class="slds-text-body_small slds-text-color_weak">
+                                            Last Login: {user.formattedLastLogin}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+
+        <!-- No Results Message -->
+        <template if:true={showNoResults}>
+            <div class="slds-m-top_medium slds-text-align_center slds-p-vertical_large">
+                <lightning-icon 
+                    icon-name="utility:search" 
+                    size="large"
+                    class="slds-m-bottom_small">
+                </lightning-icon>
+                <h3 class="slds-text-heading_medium">
+                    No users found
+                </h3>
+                <p class="slds-text-body_regular slds-text-color_weak slds-m-top_small">
+                    Try adjusting your search term
+                </p>
+            </div>
+        </template>
+
+        <!-- Selected User Display -->
+        <template if:true={hasSelectedUser}>
+            <div class="slds-m-top_medium">
+                <div class="slds-section slds-is-open">
+                    <h3 class="slds-section__title slds-theme_shade">
+                        <span class="slds-truncate slds-p-horizontal_small">
+                            Selected User
+                        </span>
+                    </h3>
+                    <div class="slds-section__content">
+                        <div class="slds-box slds-theme_default">
+                            <div class="slds-media">
+                                <div class="slds-media__figure">
+                                    <lightning-avatar
+                                        src={formattedSelectedUser.smallPhotoUrl}
+                                        fallback-icon-name="standard:user"
+                                        alternative-text={formattedSelectedUser.name}
+                                        size="large">
+                                    </lightning-avatar>
+                                </div>
+                                <div class="slds-media__body">
+                                    <h4 class="slds-text-heading_medium slds-m-bottom_x-small">
+                                        {formattedSelectedUser.name}
+                                    </h4>
+                                    
+                                    <dl class="slds-dl_horizontal">
+                                        <dt class="slds-dl_horizontal__label">
+                                            <p class="slds-truncate">Username:</p>
+                                        </dt>
+                                        <dd class="slds-dl_horizontal__detail slds-tile__meta">
+                                            <p class="slds-truncate">{formattedSelectedUser.username}</p>
+                                        </dd>
+                                        
+                                        <dt class="slds-dl_horizontal__label">
+                                            <p class="slds-truncate">Profile:</p>
+                                        </dt>
+                                        <dd class="slds-dl_horizontal__detail slds-tile__meta">
+                                            <p class="slds-truncate">{formattedSelectedUser.profileName}</p>
+                                        </dd>
+                                        
+                                        <dt class="slds-dl_horizontal__label">
+                                            <p class="slds-truncate">Status:</p>
+                                        </dt>
+                                        <dd class="slds-dl_horizontal__detail slds-tile__meta">
+                                            <span class="slds-badge slds-theme_success">Active</span>
+                                        </dd>
+                                        
+                                        <dt class="slds-dl_horizontal__label">
+                                            <p class="slds-truncate">Last Login:</p>
+                                        </dt>
+                                        <dd class="slds-dl_horizontal__detail slds-tile__meta">
+                                            <p class="slds-truncate">{formattedSelectedUser.formattedLastLogin}</p>
+                                        </dd>
+                                    </dl>
+                                    
+                                    <div class="slds-m-top_medium">
+                                        <lightning-button
+                                            label="Clear Selection"
+                                            onclick={handleClearSelection}
+                                            variant="neutral"
+                                            icon-name="utility:clear">
+                                        </lightning-button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- Error State -->
+        <template if:true={hasError}>
+            <div class="slds-m-top_medium">
+                <div class="slds-notify slds-notify_alert slds-theme_alert-texture slds-theme_error" role="alert">
+                    <span class="slds-assistive-text">error</span>
+                    <h2>
+                        <lightning-icon 
+                            icon-name="utility:error" 
+                            size="x-small"
+                            variant="inverse"
+                            class="slds-m-right_x-small">
+                        </lightning-icon>
+                        {errorMessage}
+                    </h2>
+                </div>
+            </div>
+        </template>
+    </div>
+</template>
