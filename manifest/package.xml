@@ -12,6 +12,10 @@
 		<name>ApexClass</name>
 	</types>
 	<types>
+		<members>Salesforce_Inspect_App</members>
+		<name>CustomApplication</name>
+	</types>
+	<types>
 		<members>Diagnostic_Cache__c.Cache_Data__c</members>
 		<members>Diagnostic_Cache__c.Cache_Type__c</members>
 		<members>Diagnostic_Cache__c.Expiration_Time__c</members>
