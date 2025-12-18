@@ -1,0 +1,56 @@
+.diagnostic-tool-container {
+    min-width: 1024px;
+    height: 100%;
+}
+
+.slds-card__body {
+    min-height: 400px;
+}
+
+.input-panel-placeholder,
+.progress-panel,
+.results-panel {
+    min-height: 300px;
+}
+
+.slds-media__figure {
+    margin-right: 0.75rem;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1024px) {
+    .diagnostic-tool-container {
+        min-width: 100%;
+    }
+}
+
+/* Utility bar specific styles */
+:host {
+    display: block;
+    height: 100%;
+}
+
+.slds-card_boundary {
+    border: none;
+    box-shadow: none;
+}
+
+/* Tab content styling */
+.slds-tabs_scoped__content {
+    padding: 0;
+}
+
+/* Progress indicator styling */
+.progress-panel .slds-progress {
+    margin-bottom: 1rem;
+}
+
+/* Results panel styling */
+.results-panel .slds-box {
+    background-color: var(--slds-g-color-neutral-base-95, #f3f3f3);
+}
+
+/* Empty state styling */
+.slds-text-align_center lightning-icon {
+    color: var(--slds-g-color-neutral-base-50, #706e6b);
+}

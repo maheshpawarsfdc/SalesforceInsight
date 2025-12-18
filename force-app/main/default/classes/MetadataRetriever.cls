@@ -46,7 +46,9 @@ public with sharing class MetadataRetriever {
         // Check cache first
         String cacheKey = 'tooling_' + query;
         if (responseCache.containsKey(cacheKey)) {
-            logDebug('Returning cached Tooling API response for: ' + query);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Returning cached Tooling API response for: ' + query);
+            }
             return (MetadataResponse) responseCache.get(cacheKey);
         }
         
@@ -60,7 +62,9 @@ public with sharing class MetadataRetriever {
             }
         } catch (Exception e) {
             String errorMsg = 'Tooling API query failed: ' + e.getMessage();
-            logDebug(errorMsg);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] ' + errorMsg);
+            }
             return new MetadataResponse(false, null, errorMsg);
         }
     }
@@ -84,14 +88,18 @@ public with sharing class MetadataRetriever {
                     Object parsedResponse = JSON.deserializeUntyped(res.getBody());
                     MetadataResponse response = new MetadataResponse(true, parsedResponse, null);
                     responseCache.put(cacheKey, response);
-                    logDebug('Tooling API query successful: ' + query);
+                    if (ConfigService.isDebugLoggingEnabled()) {
+                        System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Tooling API query successful: ' + query);
+                    }
                     return response;
                 } else if (res.getStatusCode() == 401 || res.getStatusCode() == 403) {
                     return new MetadataResponse(false, null, 'Insufficient permissions to access Tooling API');
                 } else if (res.getStatusCode() >= 500 && attemptCount < MAX_RETRIES - 1) {
                     // Retry on server errors
                     attemptCount++;
-                    logDebug('Tooling API server error, retrying... Attempt: ' + attemptCount);
+                    if (ConfigService.isDebugLoggingEnabled()) {
+                        System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Tooling API server error, retrying... Attempt: ' + attemptCount);
+                    }
                     continue;
                 } else {
                     return new MetadataResponse(false, null, 'API Error: ' + res.getStatus() + ' - ' + res.getBody());
@@ -100,7 +108,9 @@ public with sharing class MetadataRetriever {
                 lastException = e;
                 if (e.getMessage().contains('timeout') && attemptCount < MAX_RETRIES - 1) {
                     attemptCount++;
-                    logDebug('Callout timeout, retrying... Attempt: ' + attemptCount);
+                    if (ConfigService.isDebugLoggingEnabled()) {
+                        System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Callout timeout, retrying... Attempt: ' + attemptCount);
+                    }
                 } else {
                     break;
                 }
@@ -155,7 +165,9 @@ public with sharing class MetadataRetriever {
         // Check cache
         String cacheKey = 'metadata_' + metadataType + '_' + fullName;
         if (responseCache.containsKey(cacheKey)) {
-            logDebug('Returning cached Metadata API response for: ' + metadataType + '.' + fullName);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Returning cached Metadata API response for: ' + metadataType + '.' + fullName);
+            }
             return (MetadataResponse) responseCache.get(cacheKey);
         }
         
@@ -165,7 +177,9 @@ public with sharing class MetadataRetriever {
             return queryToolingAPI(query);
         } catch (Exception e) {
             String errorMsg = 'Metadata API query failed: ' + e.getMessage();
-            logDebug(errorMsg);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] ' + errorMsg);
+            }
             return new MetadataResponse(false, null, errorMsg);
         }
     }
@@ -207,7 +221,9 @@ public with sharing class MetadataRetriever {
         // Check cache
         String cacheKey = 'describe_' + objectName;
         if (responseCache.containsKey(cacheKey)) {
-            logDebug('Returning cached describe for: ' + objectName);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Returning cached describe for: ' + objectName);
+            }
             return (MetadataResponse) responseCache.get(cacheKey);
         }
         
@@ -232,12 +248,16 @@ public with sharing class MetadataRetriever {
             
             MetadataResponse response = new MetadataResponse(true, objectInfo, null);
             responseCache.put(cacheKey, response);
-            logDebug('Object describe successful: ' + objectName);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Object describe successful: ' + objectName);
+            }
             return response;
             
         } catch (Exception e) {
             String errorMsg = 'Object describe failed: ' + e.getMessage();
-            logDebug(errorMsg);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] ' + errorMsg);
+            }
             return new MetadataResponse(false, null, errorMsg);
         }
     }
@@ -256,7 +276,9 @@ public with sharing class MetadataRetriever {
         // Check cache
         String cacheKey = 'field_' + objectName + '_' + fieldName;
         if (responseCache.containsKey(cacheKey)) {
-            logDebug('Returning cached field metadata for: ' + objectName + '.' + fieldName);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Returning cached field metadata for: ' + objectName + '.' + fieldName);
+            }
             return (MetadataResponse) responseCache.get(cacheKey);
         }
         
@@ -290,12 +312,16 @@ public with sharing class MetadataRetriever {
             
             MetadataResponse response = new MetadataResponse(true, fieldInfo, null);
             responseCache.put(cacheKey, response);
-            logDebug('Field metadata retrieval successful: ' + objectName + '.' + fieldName);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Field metadata retrieval successful: ' + objectName + '.' + fieldName);
+            }
             return response;
             
         } catch (Exception e) {
             String errorMsg = 'Field metadata retrieval failed: ' + e.getMessage();
-            logDebug(errorMsg);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] ' + errorMsg);
+            }
             return new MetadataResponse(false, null, errorMsg);
         }
     }
@@ -311,16 +337,6 @@ public with sharing class MetadataRetriever {
             references.add(ref.getDescribe().getName());
         }
         return references;
-    }
-    
-    /**
-     * @description Logs debug information if debug logging is enabled
-     * @param message Message to log
-     */
-    private static void logDebug(String message) {
-        if (ConfigService.isDebugLoggingEnabled()) {
-            System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] ' + message);
-        }
     }
     
     /**
@@ -343,9 +359,13 @@ public with sharing class MetadataRetriever {
         
         try {
             MetadataResponse response = executeToolingQuery(query, 'async_' + query);
-            logDebug('Async Tooling API query completed: ' + response.success);
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Async Tooling API query completed: ' + response.success);
+            }
         } catch (Exception e) {
-            logDebug('Async Tooling API query failed: ' + e.getMessage());
+            if (ConfigService.isDebugLoggingEnabled()) {
+                System.debug(LoggingLevel.DEBUG, '[MetadataRetriever] Async Tooling API query failed: ' + e.getMessage());
+            }
         }
     }
 }
