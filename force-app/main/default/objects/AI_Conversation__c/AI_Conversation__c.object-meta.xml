@@ -153,15 +153,14 @@
     <enableSharing>true</enableSharing>
     <enableStreamingApi>true</enableStreamingApi>
     <externalSharingModel>Private</externalSharingModel>
-    <label>Diagnostic Request</label>
+    <label>AI Conversation</label>
     <nameField>
-        <displayFormat>DR-{000}</displayFormat>
-        <label>Request ID</label>
+        <label>Conversation Name</label>
         <trackHistory>false</trackHistory>
-        <type>AutoNumber</type>
+        <type>Text</type>
     </nameField>
-    <pluralLabel>Diagnostic Requests</pluralLabel>
+    <pluralLabel>AI Conversations</pluralLabel>
     <searchLayouts></searchLayouts>
-    <sharingModel>ReadWrite</sharingModel>
+    <sharingModel>Private</sharingModel>
     <visibility>Public</visibility>
 </CustomObject>
