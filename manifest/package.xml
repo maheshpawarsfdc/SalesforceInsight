@@ -16,10 +16,27 @@
 		<name>CustomApplication</name>
 	</types>
 	<types>
+		<members>AI_Conversation__c.Conversation_ID__c</members>
+		<members>AI_Conversation__c.Last_Message_At__c</members>
+		<members>AI_Conversation__c.Message_Count__c</members>
+		<members>AI_Conversation__c.Satisfaction_Rating__c</members>
+		<members>AI_Conversation__c.Started_At__c</members>
+		<members>AI_Conversation__c.Status__c</members>
+		<members>AI_Conversation__c.Topic__c</members>
+		<members>AI_Conversation__c.Total_Tokens_Used__c</members>
+		<members>AI_Conversation__c.User__c</members>
+		<members>AI_Message__c.AI_Confidence_Score__c</members>
+		<members>AI_Message__c.Content__c</members>
+		<members>AI_Message__c.Conversation__c</members>
+		<members>AI_Message__c.Feedback_Text__c</members>
+		<members>AI_Message__c.Role__c</members>
+		<members>AI_Message__c.Timestamp__c</members>
+		<members>AI_Message__c.Tokens_Used__c</members>
+		<members>AI_Message__c.User_Rating__c</members>
 		<members>Diagnostic_Cache__c.Cache_Data__c</members>
 		<members>Diagnostic_Cache__c.Cache_Type__c</members>
 		<members>Diagnostic_Cache__c.Expiration_Time__c</members>
-		<members>Diagnostic_Cache__c.Is_Active__c</members>
+		<members>Diagnostic_Cache__c.Is_Active__c</members>dc
 		<members>Diagnostic_Cache__c.Last_Refreshed__c</members>
 		<members>Diagnostic_Cache__c.Object_API_Name__c</members>
 		<members>Diagnostic_Cache__c.Record_Count__c</members>
@@ -46,15 +63,32 @@
 		<name>CustomField</name>
 	</types>
 	<types>
+		<members>*</members>
+		<name>CustomMetadata</name>
+	</types>
+	<types>
+		<members>AI_Conversation__c</members>
+		<members>AI_Message__c</members>
 		<members>Diagnostic_Cache__c</members>
 		<members>Diagnostic_Config__mdt</members>
 		<members>Diagnostic_Request__c</members>
+		<members>Groq_API_Configuration__mdt</members>
 		<name>CustomObject</name>
 	</types>
 	<types>
+		<members>AI_Conversation__c</members>
+		<members>Diagnostic_Cache__c</members>
+		<members>Diagnostic_Request__c</members>
+		<members>Inspect_Agent</members>
+		<name>CustomTab</name>
+	</types>
+	<types>
+		<members>AI_Conversation__c-AI Conversation Layout</members>
+		<members>AI_Message__c-AI Message Layout</members>
 		<members>Diagnostic_Cache__c-Diagnostic Cache Layout</members>
 		<members>Diagnostic_Config__mdt-Diagnostic Config Layout</members>
 		<members>Diagnostic_Request__c-Diagnostic Request Layout</members>
+		<members>Groq_API_Configuration__mdt-Groq API Configuration Layout</members>
 		<name>Layout</name>
 	</types>
 	<types>
@@ -64,8 +98,18 @@
 		<name>LightningComponentBundle</name>
 	</types>
 	<types>
+		<members>*</members>
+		<name>NamedCredential</name>
+	</types>
+	<types>
+		<members>Groq_API</members>
+		<name>RemoteSiteSetting</name>
+	</types>
+	<types>
+		<members>AI_Conversation__c.Rating_Valid_Range</members>
 		<members>Diagnostic_Cache__c.Expiry_After_Refresh</members>
 		<members>Diagnostic_Request__c.Completed_Status_Requires_End_Time</members>
+		<members>Diagnostic_Request__c.Duration_Must_Be_Positive</members>
 		<members>Diagnostic_Request__c.End_Time_After_Start_Time</members>
 		<name>ValidationRule</name>
 	</types>

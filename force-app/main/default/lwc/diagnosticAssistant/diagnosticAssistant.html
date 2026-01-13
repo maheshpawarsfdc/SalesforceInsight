@@ -1,0 +1,182 @@
+<template>
+    <!-- Main Container -->
+    <div class="diagnostic-assistant-container slds-card" role="region" aria-labelledby="assistantTitle">
+        
+        <!-- Header -->
+        <div class="assistant-header slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-p-around_small" role="banner" aria-label="Diagnostic Assistant header">
+            <div class="header-content slds-media slds-media_center">
+                <div class="slds-media__figure">
+                    <lightning-icon 
+                        icon-name="utility:einstein" 
+                        alternative-text="AI Assistant" 
+                        size="small"
+                        class="header-icon">
+                    </lightning-icon>
+                </div>
+                <div class="slds-media__body">
+                    <h2 id="assistantTitle" class="header-title slds-text-heading_small">Diagnostic Assistant</h2>
+                </div>
+            </div>
+            <div class="slds-m-left_small">
+                <lightning-button-icon
+                    icon-name="utility:close"
+                    alternative-text="Close"
+                    title="Close Assistant"
+                    onclick={handleClose}
+                    class="close-button"
+                    aria-label="Close assistant">
+                </lightning-button-icon>
+            </div>
+        </div>
+
+        <!-- Messages Container -->
+        <div class="messages-container slds-scrollable" lwc:ref="messagesContainer" role="log" aria-live="polite" aria-label="Conversation messages" tabindex="0">
+            
+            <!-- Welcome Message (shown when no messages) -->
+            <template if:true={showWelcome}>
+                <div class="welcome-message slds-box slds-theme_default slds-m-bottom_medium" role="status" aria-live="polite">
+                    <lightning-icon 
+                        icon-name="utility:info" 
+                        alternative-text="Info" 
+                        size="small"
+                        class="welcome-icon">
+                    </lightning-icon>
+                    <div class="welcome-content">
+                        <h3>Hi! I'm here to help.</h3>
+                        <p>Describe any Salesforce permission or access issues you're experiencing, and I'll help diagnose the problem.</p>
+                        <p class="welcome-examples">
+                            <strong>Examples:</strong><br/>
+                            • "I can't see the Phone field on Account"<br/>
+                            • "Why can't I edit this Contact record?"<br/>
+                            • "I get an error when saving"
+                        </p>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Message List -->
+            <template for:each={messages} for:item="message">
+                <div key={message.id} class={message.cssClass}>
+                    
+                    <!-- AI Message -->
+                    <template if:true={message.isAI}>
+                        <div class="message-bubble ai-bubble slds-grid slds-grid_align-start" role="article" aria-label="AI message">
+                            <div class="message-avatar slds-m-right_small">
+                                <lightning-icon 
+                                    icon-name="utility:einstein" 
+                                    alternative-text="AI" 
+                                    size="x-small">
+                                </lightning-icon>
+                            </div>
+                            <div class="message-content slds-box slds-theme_default">
+                                <div class="message-text" lwc:dom="manual" tabindex="0"></div>
+                                <div class="message-timestamp">{message.timestamp}</div>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- User Message -->
+                    <template if:false={message.isAI}>
+                        <div class="message-bubble user-bubble slds-grid slds-grid_align-end" role="article" aria-label="Your message">
+                            <div class="message-content slds-box slds-theme_inverse slds-text-color_inverse">
+                                <div class="message-text">{message.text}</div>
+                                <div class="message-timestamp">{message.timestamp}</div>
+                            </div>
+                            <div class="message-avatar slds-m-left_small">
+                                <lightning-icon 
+                                    icon-name="utility:user" 
+                                    alternative-text="You" 
+                                    size="x-small">
+                                </lightning-icon>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </template>
+
+            <!-- Processing Indicator -->
+            <template if:true={isProcessing}>
+                <div class="processing-message" role="status" aria-live="polite">
+                    <div class="message-bubble ai-bubble slds-grid slds-grid_align-start">
+                        <div class="message-avatar slds-m-right_small">
+                            <lightning-icon 
+                                icon-name="utility:einstein" 
+                                alternative-text="AI" 
+                                size="x-small">
+                            </lightning-icon>
+                        </div>
+                        <div class="message-content slds-box slds-theme_default slds-align_absolute-center">
+                            <div class="slds-grid slds-grid_align-spread slds-align_absolute-center slds-p-vertical_xx-small">
+                                <div class="typing-indicator">
+                                    <span></span>
+                                    <span></span>
+                                    <span></span>
+                                </div>
+                                <lightning-spinner alternative-text="Analyzing" size="small"></lightning-spinner>
+                            </div>
+                            <div class="processing-text">Analyzing your issue...</div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Error Message -->
+            <template if:true={errorMessage}>
+                <div class="error-container" role="alert" aria-live="assertive">
+                    <div class="error-message">
+                        <lightning-icon 
+                            icon-name="utility:error" 
+                            alternative-text="Error" 
+                            variant="error"
+                            size="small">
+                        </lightning-icon>
+                        <div class="error-text">
+                            <strong>Something went wrong</strong>
+                            <p>{errorMessage}</p>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-container slds-p-around_small" role="form" aria-label="Message composer">
+            <div class="input-wrapper slds-grid slds-grid_align-spread slds-align_absolute-center">
+                <div class="slds-size_2-of-3">
+                    <lightning-textarea
+                        name="userInput"
+                        placeholder="Describe your issue here..."
+                        value={inputValue}
+                        onchange={handleInputChange}
+                        onkeydown={handleKeyPress}
+                        class="input-field"
+                        max-length="2000"
+                        disabled={isProcessing}
+                        aria-label="Message input">
+                    </lightning-textarea>
+                </div>
+                <div class="slds-size_1-of-3 slds-grid slds-grid_align-end slds-align_absolute-center input-actions">
+                    <span class="character-count slds-text-body_small slds-m-right_small">{characterCount}/2000</span>
+                    <lightning-button
+                        label="Send"
+                        title="Send message"
+                        variant="brand"
+                        onclick={handleSend}
+                        disabled={isSendDisabled}
+                        class="send-button"
+                        icon-name="utility:send"
+                        icon-position="right"
+                        aria-label="Send message">
+                    </lightning-button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="assistant-footer slds-p-vertical_xx-small slds-p-horizontal_small">
+            <p class="footer-text slds-text-body_small slds-text-color_weak">
+                Powered by AI • Always verify critical information with your administrator
+            </p>
+        </div>
+    </div>
+</template>
