@@ -30,9 +30,8 @@ public with sharing class ConversationManager {
         }
     }
     
-    /**
-     * @description Conversation summary for context
-     */
+
+    
     public class ConversationSummary {
         @AuraEnabled public String topic;
         @AuraEnabled public String issueType;
