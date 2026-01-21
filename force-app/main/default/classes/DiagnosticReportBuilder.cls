@@ -2,8 +2,10 @@
  * @description Builder class for creating comprehensive diagnostic reports
  * Formats results from SalesforceDiagnosticService and MetadataQueryService
  * into human-readable and AI-friendly reports
+ * NOW SUPPORTS ADMIN DIAGNOSTICS: Shows who requested and who is being diagnosed
  * @author Salesforce AI Diagnostic Assistant
  * @date 2026
+ * @version 2.1 - Admin Diagnostic Support
  */
 public with sharing class DiagnosticReportBuilder {
     
@@ -38,8 +40,15 @@ public with sharing class DiagnosticReportBuilder {
         @AuraEnabled public String userRole;
         @AuraEnabled public Boolean isActive;
         
+        // NEW: Admin diagnostic fields
+        @AuraEnabled public Boolean isAdminDiagnostic;
+        @AuraEnabled public String requestedByName;
+        @AuraEnabled public String requestedByEmail;
+        @AuraEnabled public Id requestedById;
+        
         public UserContext() {
             this.permissionSets = new List<String>();
+            this.isAdminDiagnostic = false;
         }
     }
     
@@ -92,7 +101,7 @@ public with sharing class DiagnosticReportBuilder {
         DiagnosticReport report = new DiagnosticReport();
         
         try {
-            // Populate user context
+            // Populate user context (now includes admin detection)
             populateUserContext(report, userId);
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error creating report: ' + e.getMessage());
@@ -103,9 +112,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Add object permission check results to report
-     * @param report The diagnostic report
-     * @param objectName Object being checked
-     * @param permResult Permission check result from SalesforceDiagnosticService
      */
     public static void addObjectPermissionFinding(
         DiagnosticReport report, 
@@ -149,7 +155,6 @@ public with sharing class DiagnosticReportBuilder {
             finding.impact = 'User cannot view any ' + objectName + ' records';
         }
         
-        // Add permission details
         if (permResult.permissionDetails != null && !permResult.permissionDetails.isEmpty()) {
             finding.details.addAll(permResult.permissionDetails);
         }
@@ -160,10 +165,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Add field-level security check results to report
-     * @param report The diagnostic report
-     * @param objectName Object name
-     * @param fieldName Field name
-     * @param fieldResult FLS check result from SalesforceDiagnosticService
      */
     public static void addFieldSecurityFinding(
         DiagnosticReport report,
@@ -180,14 +181,12 @@ public with sharing class DiagnosticReportBuilder {
         finding.category = 'Field-Level Security';
         finding.title = 'Field Access: ' + objectName + '.' + fieldName;
         
-        // Determine status
         if (fieldResult.errorMessage != null) {
             finding.status = 'FAIL';
             finding.statusIcon = '✗';
             finding.severity = Severity.HIGH;
             finding.details.add('Error: ' + fieldResult.errorMessage);
             
-            // Check if it's a "field doesn't exist" error
             if (fieldResult.errorMessage.contains('does not exist')) {
                 finding.impact = 'Field "' + fieldName + '" does not exist on ' + objectName + ' object';
             }
@@ -215,7 +214,6 @@ public with sharing class DiagnosticReportBuilder {
             finding.impact = 'Field exists but Field-Level Security prevents viewing';
         }
         
-        // Add permission details
         if (fieldResult.permissionDetails != null && !fieldResult.permissionDetails.isEmpty()) {
             finding.details.addAll(fieldResult.permissionDetails);
         }
@@ -226,9 +224,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Add record access check results to report
-     * @param report The diagnostic report
-     * @param recordId Record ID being checked
-     * @param recordAccess Access check result from SalesforceDiagnosticService
      */
     public static void addRecordAccessFinding(
         DiagnosticReport report,
@@ -244,7 +239,6 @@ public with sharing class DiagnosticReportBuilder {
         finding.category = 'Record Access';
         finding.title = 'Record-Level Access: ' + recordId;
         
-        // Determine status
         if (recordAccess.errorMessage != null) {
             finding.status = 'FAIL';
             finding.statusIcon = '✗';
@@ -281,10 +275,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Add field existence check results to report
-     * @param report The diagnostic report
-     * @param objectName Object name
-     * @param fieldName Field name
-     * @param exists Whether field exists
      */
     public static void addFieldExistenceFinding(
         DiagnosticReport report,
@@ -320,9 +310,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Add object existence check results to report
-     * @param report The diagnostic report
-     * @param objectName Object name
-     * @param exists Whether object exists
      */
     public static void addObjectExistenceFinding(
         DiagnosticReport report,
@@ -357,7 +344,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Finalize the report by generating summary and output formats
-     * @param report The diagnostic report
      */
     public static void finalizeReport(DiagnosticReport report) {
         if (report == null) {
@@ -365,13 +351,8 @@ public with sharing class DiagnosticReportBuilder {
         }
         
         try {
-            // Generate summary
             generateSummary(report);
-            
-            // Generate plain text format
             report.plainTextReport = generatePlainTextReport(report);
-            
-            // Generate JSON format
             report.jsonReport = JSON.serializePretty(report);
             
         } catch (Exception e) {
@@ -381,7 +362,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Generate summary section of the report
-     * @param report The diagnostic report
      */
     private static void generateSummary(DiagnosticReport report) {
         if (report == null || report.findings.isEmpty()) {
@@ -390,7 +370,6 @@ public with sharing class DiagnosticReportBuilder {
             return;
         }
         
-        // Determine root cause based on failed checks
         List<String> failedCategories = new List<String>();
         Severity highestSeverity = Severity.INFO;
         
@@ -399,7 +378,6 @@ public with sharing class DiagnosticReportBuilder {
                 failedCategories.add(finding.category);
             }
             
-            // Track highest severity
             if (finding.severity == Severity.HIGH) {
                 highestSeverity = Severity.HIGH;
             } else if (finding.severity == Severity.MEDIUM && highestSeverity != Severity.HIGH) {
@@ -411,7 +389,6 @@ public with sharing class DiagnosticReportBuilder {
         
         report.summary.overallSeverity = highestSeverity;
         
-        // Set root cause
         if (failedCategories.isEmpty()) {
             if (report.summary.warningChecks > 0) {
                 report.summary.rootCause = 'Some permissions are limited but functional';
@@ -424,10 +401,8 @@ public with sharing class DiagnosticReportBuilder {
             report.summary.rootCause = 'Multiple permission issues: ' + String.join(failedCategories, ', ');
         }
         
-        // Generate suggested actions based on findings
         generateSuggestedActions(report);
         
-        // Set next steps
         if (report.summary.failedChecks > 0) {
             report.summary.nextSteps = 'Contact your Salesforce administrator to review and update permissions';
         } else if (report.summary.warningChecks > 0) {
@@ -439,7 +414,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Generate suggested actions based on findings
-     * @param report The diagnostic report
      */
     private static void generateSuggestedActions(DiagnosticReport report) {
         Set<String> actions = new Set<String>();
@@ -466,7 +440,6 @@ public with sharing class DiagnosticReportBuilder {
         
         report.summary.suggestedActions.addAll(actions);
         
-        // Add who can help
         report.summary.whoCanHelp.add('Salesforce Administrator');
         if (report.summary.failedChecks > 0 || report.summary.warningChecks > 0) {
             report.summary.whoCanHelp.add('System Administrator');
@@ -475,8 +448,7 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Generate plain text version of the report
-     * @param report The diagnostic report
-     * @return Formatted plain text report
+     * NOW INCLUDES ADMIN DIAGNOSTIC HEADER
      */
     public static String generatePlainTextReport(DiagnosticReport report) {
         if (report == null) {
@@ -490,7 +462,20 @@ public with sharing class DiagnosticReportBuilder {
         sb.append('DIAGNOSTIC REPORT\n');
         sb.append('═══════════════════════════════════════════════════════════\n');
         sb.append('Report ID: ' + report.reportId + '\n');
-        sb.append('Generated: ' + report.timestamp.format('yyyy-MM-dd HH:mm:ss') + '\n\n');
+        sb.append('Generated: ' + report.timestamp.format('yyyy-MM-dd HH:mm:ss') + '\n');
+        
+        // NEW: Admin diagnostic mode banner
+        if (report.userContext != null && report.userContext.isAdminDiagnostic) {
+            sb.append('\n');
+            sb.append('⚠️  ADMIN DIAGNOSTIC MODE\n');
+            sb.append('───────────────────────────────────────────────────────────\n');
+            sb.append('Requested By: ' + report.userContext.requestedByName + '\n');
+            sb.append('              (' + report.userContext.requestedByEmail + ')\n');
+            sb.append('Diagnosing For: ' + report.userContext.userName + '\n');
+            sb.append('                (User ID: ' + report.userContext.userId + ')\n');
+            sb.append('═══════════════════════════════════════════════════════════\n');
+        }
+        sb.append('\n');
         
         // User Context
         sb.append('USER CONTEXT:\n');
@@ -575,8 +560,7 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Populate user context information
-     * @param report The diagnostic report
-     * @param userId User ID
+     * NOW DETECTS ADMIN DIAGNOSTIC MODE
      */
     private static void populateUserContext(DiagnosticReport report, Id userId) {
         if (report == null || userId == null) {
@@ -599,6 +583,25 @@ public with sharing class DiagnosticReportBuilder {
                 report.userContext.userName = u.Name;
             }
             
+            // NEW: Check if this is an admin diagnostic (different user)
+            Id currentUserId = UserInfo.getUserId();
+            if (currentUserId != userId) {
+                report.userContext.isAdminDiagnostic = true;
+                report.userContext.requestedById = currentUserId;
+                
+                User requester = [
+                    SELECT Name, Email 
+                    FROM User 
+                    WHERE Id = :currentUserId 
+                    LIMIT 1
+                ];
+                
+                report.userContext.requestedByName = requester.Name;
+                report.userContext.requestedByEmail = requester.Email;
+                
+                System.debug('Admin diagnostic mode: ' + requester.Name + ' diagnosing for ' + report.userContext.userName);
+            }
+            
             // Get permission sets
             List<SalesforceDiagnosticService.PermissionSetInfo> permSets = 
                 SalesforceDiagnosticService.getUserPermissionSets(userId);
@@ -614,8 +617,6 @@ public with sharing class DiagnosticReportBuilder {
     
     /**
      * @description Update report counters based on finding status
-     * @param report The diagnostic report
-     * @param finding The finding being added
      */
     private static void updateReportCounters(DiagnosticReport report, DiagnosticFinding finding) {
         if (report == null || finding == null) {

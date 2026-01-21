@@ -1,17 +1,16 @@
 /**
  * @description Main Apex controller for the Diagnostic Assistant Lightning Web Component.
  *              Orchestrates the entire diagnostic flow using all integrated services.
- *              Now properly integrated with all backend services for maximum capability.
+ *              Now supports ADMIN MODE - System Admins can diagnose for any user
  * @author Salesforce Diagnostic Assistant Team
- * @date 2025-01-09
- * @version 2.0 (Fully Integrated)
- * @group AI Integration
+ * @date 2026-01-21
+ * @version 2.1 - Admin Mode Support
  */
 public with sharing class DiagnosticAssistantController {
     
     /**
      * @description Main entry point for processing user messages from the LWC
-     * FIXED: Reordered to avoid DML before callout error
+     * SUPPORTS ADMIN MODE: Detects target user from query
      * @param message The user's message/question
      * @param sessionId Existing session ID or null for new session
      * @return ResponseWrapper containing AI response and session info
@@ -25,6 +24,7 @@ public with sharing class DiagnosticAssistantController {
             System.debug('=== Processing User Message ===');
             System.debug('Message: ' + message);
             System.debug('Session ID: ' + sessionId);
+            System.debug('Current User ID: ' + UserInfo.getUserId());
             
             // Layer 1: Input Validation
             if (!validateInput(message, response)) {
@@ -36,16 +36,20 @@ public with sharing class DiagnosticAssistantController {
             System.debug('Message Analysis: Category=' + analysis.issueCategory + 
                         ', Confidence=' + analysis.confidence);
             
+            // Layer 2.5: Determine target user (ADMIN MODE SUPPORT)
+            Id targetUserId = determineTargetUser(analysis);
+            Id currentUserId = UserInfo.getUserId();
+            System.debug('Target User ID: ' + targetUserId);
+            System.debug('Is Admin Diagnostic: ' + (targetUserId != currentUserId));
+            
             // Layer 3: Run Diagnostics FIRST (before any DML)
-            // This doesn't involve DML, just queries
             DiagnosticReportBuilder.DiagnosticReport diagnosticReport = 
-                runComprehensiveDiagnostics(analysis, UserInfo.getUserId());
+                runComprehensiveDiagnostics(analysis, targetUserId);
             
             // Convert to diagnostic steps for UI
             response.steps = buildDiagnosticSteps(diagnosticReport);
             
             // Layer 4: Build AI Context (no DML here)
-            // Need to handle session context WITHOUT creating/updating session yet
             String conversationContext = '';
             if (String.isNotBlank(sessionId)) {
                 try {
@@ -65,7 +69,7 @@ public with sharing class DiagnosticAssistantController {
             String aiResponseContent = '';
             
             if (apiResponse.success) {
-                // Layer 6: Parse AI Response (Using AIResponseParser)
+                // Layer 6: Parse AI Response
                 AIResponseParser.ParsedResponse parsedResponse = 
                     AIResponseParser.parseResponse(apiResponse.content);
                 
@@ -74,7 +78,6 @@ public with sharing class DiagnosticAssistantController {
                 response.success = true;
                 response.fallback = false;
                 
-                // Log response quality
                 System.debug('Response Quality: ' + parsedResponse.quality.qualityScore);
                 
             } else {
@@ -87,13 +90,11 @@ public with sharing class DiagnosticAssistantController {
             }
             
             // Layer 7: NOW do all DML operations (after callout is complete)
-            // Update conversation and session
             ConversationManager.ConversationContext context;
             if (String.isNotBlank(sessionId)) {
                 context = ConversationManager.addMessage(sessionId, 'user', message);
                 context = ConversationManager.addMessage(sessionId, 'assistant', aiResponseContent);
             } else {
-                // Create new session
                 context = ConversationManager.addMessage(null, 'user', message);
                 context = ConversationManager.addMessage(context.sessionId, 'assistant', aiResponseContent);
                 sessionId = context.sessionId;
@@ -111,7 +112,7 @@ public with sharing class DiagnosticAssistantController {
             
         } catch (CalloutException e) {
             System.debug(LoggingLevel.ERROR, 'API Callout failed: ' + e.getMessage());
-            response.message = 'I\'m having trouble connecting right now. Please try again in a moment.';
+            response.message = 'I am having trouble connecting right now. Please try again in a moment.';
             response.success = true;
             response.fallback = true;
             logError('API Callout', e);
@@ -128,10 +129,142 @@ public with sharing class DiagnosticAssistantController {
     }
     
     /**
+     * @description Determine which user to diagnose (ADMIN MODE SUPPORT)
+     * @param analysis Message analysis with potential target user info
+     * @return User ID to diagnose for
+     */
+    private static Id determineTargetUser(MessageAnalyzer.MessageAnalysis analysis) {
+        Id currentUserId = UserInfo.getUserId();
+        
+        // If no target user mentioned, use current user
+        if (analysis.targetUserId == null && 
+            String.isBlank(analysis.targetUserName) && 
+            String.isBlank(analysis.targetUserEmail)) {
+            System.debug('No target user detected - using current user');
+            return currentUserId;
+        }
+        
+        // Check if current user is System Admin
+        if (!isSystemAdmin()) {
+            System.debug('Non-admin user - ignoring target user, using current user');
+            return currentUserId;
+        }
+        
+        // Admin is diagnosing for another user - resolve the user ID
+        return resolveTargetUserId(analysis);
+    }
+    
+    /**
+     * @description Check if current user is System Administrator
+     * @return Boolean indicating if user is System Admin
+     */
+    private static Boolean isSystemAdmin() {
+        try {
+            User currentUser = [
+                SELECT Profile.Name 
+                FROM User 
+                WHERE Id = :UserInfo.getUserId() 
+                LIMIT 1
+            ];
+            
+            Boolean isAdmin = currentUser.Profile.Name == 'System Administrator';
+            System.debug('Current user is System Admin: ' + isAdmin);
+            return isAdmin;
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error checking admin status: ' + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * @description Resolve target user ID from analysis (name, email, or direct ID)
+     * @param analysis Message analysis containing target user hints
+     * @return Resolved user ID (or current user if resolution fails)
+     */
+    private static Id resolveTargetUserId(MessageAnalyzer.MessageAnalysis analysis) {
+        Id currentUserId = UserInfo.getUserId();
+        
+        try {
+            // Priority 1: Direct User ID provided
+            if (analysis.targetUserId != null) {
+                List<User> users = [
+                    SELECT Id, Name, Email 
+                    FROM User 
+                    WHERE Id = :analysis.targetUserId 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    System.debug('Resolved target user by ID: ' + users[0].Name);
+                    return users[0].Id;
+                }
+            }
+            
+            // Priority 2: Email address
+            if (String.isNotBlank(analysis.targetUserEmail)) {
+                List<User> users = [
+                    SELECT Id, Name, Email 
+                    FROM User 
+                    WHERE Email = :analysis.targetUserEmail 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    System.debug('Resolved target user by email: ' + users[0].Name + ' (' + users[0].Email + ')');
+                    return users[0].Id;
+                } else {
+                    System.debug('No active user found with email: ' + analysis.targetUserEmail);
+                }
+            }
+            
+            // Priority 3: User name (exact or partial match)
+            if (String.isNotBlank(analysis.targetUserName)) {
+                // Try exact match first
+                List<User> users = [
+                    SELECT Id, Name, Email 
+                    FROM User 
+                    WHERE Name = :analysis.targetUserName 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    System.debug('Resolved target user by exact name: ' + users[0].Name);
+                    return users[0].Id;
+                }
+                
+                // Try partial match (LIKE)
+                String likePattern = '%' + analysis.targetUserName + '%';
+                users = [
+                    SELECT Id, Name, Email 
+                    FROM User 
+                    WHERE Name LIKE :likePattern 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    System.debug('Resolved target user by partial name: ' + users[0].Name);
+                    return users[0].Id;
+                } else {
+                    System.debug('No active user found with name: ' + analysis.targetUserName);
+                }
+            }
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error resolving target user: ' + e.getMessage());
+        }
+        
+        // Fallback: Current user
+        System.debug('Could not resolve target user - using current user');
+        return currentUserId;
+    }
+    
+    /**
      * @description Validates user input
-     * @param message User's message
-     * @param response Response object to populate with errors
-     * @return Boolean indicating if validation passed
      */
     private static Boolean validateInput(String message, ResponseWrapper response) {
         if (String.isBlank(message)) {
@@ -150,42 +283,23 @@ public with sharing class DiagnosticAssistantController {
     }
     
     /**
-     * @description Initialize a new conversation session
-     * @param firstMessage First user message
-     * @return ConversationContext with new session
-     */
-    private static ConversationManager.ConversationContext initializeNewSession(String firstMessage) {
-        // ConversationManager will create session internally
-        ConversationManager.ConversationContext context = 
-            ConversationManager.addMessage(null, 'user', firstMessage);
-        
-        System.debug('New session created: ' + context.sessionId);
-        return context;
-    }
-    
-    /**
-     * @description Run comprehensive diagnostics using all diagnostic services
-     * @param analysis Message analysis result
-     * @param userId User to diagnose for
-     * @return Complete diagnostic report
+     * @description Run comprehensive diagnostics
+     * NOW ACCEPTS targetUserId instead of always using current user
      */
     private static DiagnosticReportBuilder.DiagnosticReport runComprehensiveDiagnostics(
         MessageAnalyzer.MessageAnalysis analysis,
         Id userId
     ) {
-        // Create new diagnostic report
         DiagnosticReportBuilder.DiagnosticReport report = 
             DiagnosticReportBuilder.createReport(userId);
-        System.debug('=== RUNNING DIAGNOSTICS ===');
+        
+        System.debug('=== RUNNING DIAGNOSTICS FOR USER: ' + userId + ' ===');
         System.debug('Objects involved: ' + analysis.objectsInvolved);
         System.debug('Diagnostics needed: ' + String.join(analysis.diagnosticsNeeded, ', '));
-        //System.debug('Running diagnostics: ' + String.join(analysis.diagnosticsNeeded, ', '));
         
         try {
-            // Run diagnostics based on what MessageAnalyzer determined we need
             for (String diagnostic : analysis.diagnosticsNeeded) {
                 
-                // Object existence and permissions
                 if (diagnostic == 'checkObjectPermissions' && !analysis.objectsInvolved.isEmpty()) {
                     for (String objectName : analysis.objectsInvolved) {
                         System.debug('>>> Checking object permissions for: ' + objectName);
@@ -193,7 +307,6 @@ public with sharing class DiagnosticAssistantController {
                     }
                 }
                 
-                // Field existence and security
                 if (diagnostic == 'checkFieldSecurity' && !analysis.fieldsInvolved.isEmpty()) {
                     for (String objectName : analysis.objectsInvolved) {
                         for (String fieldName : analysis.fieldsInvolved) {
@@ -202,26 +315,24 @@ public with sharing class DiagnosticAssistantController {
                     }
                 }
                 
-                // Record access
                 if (diagnostic == 'checkRecordAccess' && !analysis.recordIds.isEmpty()) {
                     for (String recordId : analysis.recordIds) {
                         runRecordAccessCheck(recordId, userId, report);
                     }
                 }
                 
-                // Page layout check (simplified)
                 if (diagnostic == 'checkPageLayout' && !analysis.objectsInvolved.isEmpty()) {
                     for (String objectName : analysis.objectsInvolved) {
                         runPageLayoutCheck(objectName, report);
                     }
                 }
+                
             }
             
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error during diagnostics: ' + e.getMessage());
         }
         
-        // Finalize the report (generates summary and formatted output)
         DiagnosticReportBuilder.finalizeReport(report);
         
         System.debug('Diagnostic report completed with ' + report.findings.size() + ' findings');
@@ -230,15 +341,14 @@ public with sharing class DiagnosticAssistantController {
         return report;
     }
     
-    /**
-     * @description Run object permission check using SalesforceDiagnosticService
-     */
+    // NOTE: The rest of the methods remain UNCHANGED from your original file
+    // I'm including them here for completeness
+    
     private static void runObjectPermissionCheck(
         String objectName, 
         Id userId, 
         DiagnosticReportBuilder.DiagnosticReport report
     ) {
-        // First check if object exists
         if (!MetadataQueryService.checkObjectExists(objectName)) {
             DiagnosticReportBuilder.addObjectExistenceFinding(report, objectName, false);
             return;
@@ -246,23 +356,18 @@ public with sharing class DiagnosticAssistantController {
         
         DiagnosticReportBuilder.addObjectExistenceFinding(report, objectName, true);
         
-        // Check permissions using SalesforceDiagnosticService
         SalesforceDiagnosticService.ObjectPermissionResult permResult = 
             SalesforceDiagnosticService.checkObjectPermissions(objectName, userId);
         
         DiagnosticReportBuilder.addObjectPermissionFinding(report, objectName, permResult);
     }
     
-    /**
-     * @description Run field security check using SalesforceDiagnosticService
-     */
     private static void runFieldSecurityCheck(
         String objectName,
         String fieldName,
         Id userId,
         DiagnosticReportBuilder.DiagnosticReport report
     ) {
-        // First check if field exists
         if (!MetadataQueryService.checkFieldExists(objectName, fieldName)) {
             DiagnosticReportBuilder.addFieldExistenceFinding(report, objectName, fieldName, false);
             return;
@@ -270,16 +375,12 @@ public with sharing class DiagnosticAssistantController {
         
         DiagnosticReportBuilder.addFieldExistenceFinding(report, objectName, fieldName, true);
         
-        // Check field-level security using SalesforceDiagnosticService
         SalesforceDiagnosticService.FieldPermissionResult fieldResult = 
             SalesforceDiagnosticService.checkFieldLevelSecurity(objectName, fieldName, userId);
         
         DiagnosticReportBuilder.addFieldSecurityFinding(report, objectName, fieldName, fieldResult);
     }
     
-    /**
-     * @description Run record access check using SalesforceDiagnosticService
-     */
     private static void runRecordAccessCheck(
         String recordId,
         Id userId,
@@ -291,17 +392,12 @@ public with sharing class DiagnosticAssistantController {
         DiagnosticReportBuilder.addRecordAccessFinding(report, recordId, recordAccess);
     }
     
-    /**
-     * @description Run page layout check (simplified - checks which fields are accessible)
-     */
     private static void runPageLayoutCheck(
         String objectName,
         DiagnosticReportBuilder.DiagnosticReport report
     ) {
-        // Get accessible fields on the layout
         List<String> layoutFields = MetadataQueryService.getPageLayoutFields(objectName, null);
         
-        // Add informational finding
         DiagnosticReportBuilder.DiagnosticFinding finding = 
             new DiagnosticReportBuilder.DiagnosticFinding();
         finding.sequenceNumber = report.findings.size() + 1;
@@ -313,7 +409,6 @@ public with sharing class DiagnosticAssistantController {
         finding.details.add('Found ' + layoutFields.size() + ' accessible fields');
         
         if (!layoutFields.isEmpty()) {
-            // Show first few fields as examples
             Integer count = Math.min(5, layoutFields.size());
             List<String> sampleFields = new List<String>();
             for (Integer i = 0; i < count; i++) {
@@ -328,25 +423,15 @@ public with sharing class DiagnosticAssistantController {
         report.findings.add(finding);
     }
     
-    /**
-     * @description Build AI context without creating/updating session
-     * Used to avoid DML before callout
-     */
     private static String buildAIContextWithoutSession(
         MessageAnalyzer.MessageAnalysis analysis,
         String conversationContext,
         DiagnosticReportBuilder.DiagnosticReport diagnosticReport
     ) {
-        // Get base system prompt
         String systemPrompt = AIPromptService.getMainSystemPrompt();
-        
-        // Get scenario-specific prompt based on issue type
         String scenarioPrompt = AIPromptService.getScenarioPrompt(analysis.issueCategory);
-        
-        // Format diagnostic results
         String diagnosticResults = diagnosticReport.plainTextReport;
         
-        // Build complete prompt using AIPromptService
         String completeContext = AIPromptService.buildCompletePrompt(
             systemPrompt,
             scenarioPrompt,
@@ -354,52 +439,41 @@ public with sharing class DiagnosticAssistantController {
             conversationContext
         );
         
-        // Validate prompt length
         if (!AIPromptService.validatePromptLength(completeContext)) {
             System.debug(LoggingLevel.WARN, 'Prompt exceeds recommended length, truncating...');
-            // Truncate conversation context if needed
             completeContext = AIPromptService.buildCompletePrompt(
                 systemPrompt,
                 scenarioPrompt,
                 diagnosticResults,
-                '' // Remove conversation context to save tokens
+                ''
             );
         }
         
-            System.debug('=== AI CONTEXT BEING SENT ===');
-            System.debug(completeContext);        
+        System.debug('=== AI CONTEXT BEING SENT ===');
+        System.debug(completeContext);        
         return completeContext;
     }
     
-    /**
-     * @description Call Groq AI with proper error handling
-     * Note: Must be called BEFORE any DML operations to avoid callout-after-DML error
-     */
     private static GroqAPIService.APIResponse callGroqAI(
         String userMessage,
         MessageAnalyzer.MessageAnalysis analysis,
         String context
     ) {
-        // Build system prompt specific to the issue
         String systemPrompt = AIPromptService.getMainSystemPrompt();
         
-        // Add scenario-specific guidance
         if (String.isNotBlank(analysis.issueCategory)) {
             systemPrompt += '\n\n' + AIPromptService.getScenarioPrompt(analysis.issueCategory);
         }
         
-        // Call Groq API using GroqAPIService
         GroqAPIService.APIResponse response = GroqAPIService.sendMessageWithContext(
             userMessage,
             systemPrompt,
             context
         );
         
-        // Log token usage if available
         if (response.success && response.tokensUsed != null) {
             System.debug('AI Response Success - Tokens used: ' + response.tokensUsed);
             
-            // Log for analytics (using AIPromptService)
             AIPromptService.logPromptUsage(
                 'diagnostic_assistant',
                 analysis.issueCategory,
@@ -412,36 +486,29 @@ public with sharing class DiagnosticAssistantController {
         return response;
     }
     
-    /**
-     * @description Generate intelligent fallback response when AI is unavailable
-     * Uses diagnostic report to provide meaningful response
-     */
     private static String generateIntelligentFallback(
         DiagnosticReportBuilder.DiagnosticReport diagnosticReport
     ) {
         StringBuilder fallback = new StringBuilder();
         
-        fallback.append('I\'m having trouble connecting to my AI service, but I\'ve completed ');
+        fallback.append('I am having trouble connecting to my AI service, but I have completed ');
         fallback.append('diagnostic checks for you.\n\n');
         
-        // Add summary from diagnostic report
         if (diagnosticReport != null && diagnosticReport.summary != null) {
             fallback.append('**What I Found:**\n');
             fallback.append(diagnosticReport.summary.rootCause + '\n\n');
             
-            // Add suggested actions
             if (!diagnosticReport.summary.suggestedActions.isEmpty()) {
                 fallback.append('**What to Do:**\n');
                 Integer actionNum = 1;
                 for (String action : diagnosticReport.summary.suggestedActions) {
                     fallback.append(actionNum + '. ' + action + '\n');
                     actionNum++;
-                    if (actionNum > 3) break; // Limit to top 3 actions
+                    if (actionNum > 3) break;
                 }
                 fallback.append('\n');
             }
             
-            // Add who can help
             if (!diagnosticReport.summary.whoCanHelp.isEmpty()) {
                 fallback.append('**Who Can Help:**\n');
                 for (String contact : diagnosticReport.summary.whoCanHelp) {
@@ -452,7 +519,6 @@ public with sharing class DiagnosticAssistantController {
             
             fallback.append(diagnosticReport.summary.nextSteps);
         } else {
-            // Generic fallback if no diagnostic report
             fallback.append('**Common Solutions:**\n');
             fallback.append('• Check Field-Level Security settings\n');
             fallback.append('• Verify Object permissions in your profile\n');
@@ -463,9 +529,6 @@ public with sharing class DiagnosticAssistantController {
         return fallback.toString();
     }
     
-    /**
-     * @description Convert diagnostic report to UI-friendly steps
-     */
     private static List<DiagnosticStep> buildDiagnosticSteps(
         DiagnosticReportBuilder.DiagnosticReport report
     ) {
@@ -478,7 +541,7 @@ public with sharing class DiagnosticAssistantController {
         for (DiagnosticReportBuilder.DiagnosticFinding finding : report.findings) {
             DiagnosticStep step = new DiagnosticStep();
             step.name = finding.title;
-            step.status = finding.status.toLowerCase(); // PASS -> pass, FAIL -> fail
+            step.status = finding.status.toLowerCase();
             step.details = String.join(finding.details, '\n');
             steps.add(step);
         }
@@ -486,21 +549,12 @@ public with sharing class DiagnosticAssistantController {
         return steps;
     }
     
-    /**
-     * @description Log errors for monitoring
-     */
     private static void logError(String context, Exception e) {
         System.debug(LoggingLevel.ERROR, context + ' Error: ' + e.getMessage());
         System.debug(LoggingLevel.ERROR, 'Stack Trace: ' + e.getStackTraceString());
-        
-        // In production, you might want to create error records or send to monitoring service
     }
     
-    // ==================== INNER CLASSES ====================
-    
-    /**
-     * @description Response wrapper for LWC
-     */
+    // Inner classes
     public class ResponseWrapper {
         @AuraEnabled public Boolean success;
         @AuraEnabled public String message;
@@ -516,18 +570,12 @@ public with sharing class DiagnosticAssistantController {
         }
     }
     
-    /**
-     * @description Diagnostic step for UI progress display
-     */
     public class DiagnosticStep {
         @AuraEnabled public String name;
-        @AuraEnabled public String status; // pass, fail, warning, pending
+        @AuraEnabled public String status;
         @AuraEnabled public String details;
     }
     
-    /**
-     * @description Simple StringBuilder helper
-     */
     private class StringBuilder {
         private List<String> parts = new List<String>();
         
@@ -540,13 +588,7 @@ public with sharing class DiagnosticAssistantController {
         }
     }
     
-    // ==================== UTILITY METHODS ====================
-    
-    /**
-     * @description Get conversation statistics for a session
-     * @param sessionId Session ID
-     * @return Map with statistics
-     */
+    // Utility methods
     @AuraEnabled(cacheable=false)
     public static Map<String, Object> getSessionStats(String sessionId) {
         try {
@@ -557,10 +599,6 @@ public with sharing class DiagnosticAssistantController {
         }
     }
     
-    /**
-     * @description Clear conversation history (for testing or user request)
-     * @param sessionId Session ID
-     */
     @AuraEnabled
     public static void clearSession(String sessionId) {
         try {
@@ -570,10 +608,6 @@ public with sharing class DiagnosticAssistantController {
         }
     }
     
-    /**
-     * @description Test API connectivity
-     * @return Boolean indicating if API is accessible
-     */
     @AuraEnabled(cacheable=false)
     public static Boolean testAPIConnection() {
         return GroqAPIService.testConnection();
