@@ -1,8 +1,10 @@
 /**
  * @description Service class for querying Salesforce metadata efficiently
+ * ENHANCED: Now includes Tooling API integration for real page layout detection
  * Includes caching to optimize performance and avoid governor limits
  * @author Salesforce AI Diagnostic Assistant
  * @date 2026
+ * @version 2.0 - Production Grade
  */
 public with sharing class MetadataQueryService {
     
@@ -12,18 +14,54 @@ public with sharing class MetadataQueryService {
         new Map<String, Map<String, Schema.SObjectField>>();
     private static Map<String, Schema.DescribeSObjectResult> objectDescribeCache = 
         new Map<String, Schema.DescribeSObjectResult>();
+    
+    // NEW: Layout and validation rule caches
+    private static Map<String, LayoutMetadata> layoutCache = new Map<String, LayoutMetadata>();
     private static Map<String, List<ValidationRuleInfo>> validationRulesCache = 
         new Map<String, List<ValidationRuleInfo>>();
+    
+    // Cache expiration tracking
+    private static Map<String, DateTime> cacheTimestamps = new Map<String, DateTime>();
+    private static final Integer CACHE_DURATION_MINUTES = 60;
+    
+    /**
+     * @description Wrapper class for layout metadata
+     */
+    public class LayoutMetadata {
+        @AuraEnabled public String layoutName;
+        @AuraEnabled public String objectName;
+        @AuraEnabled public List<String> fields;
+        @AuraEnabled public Map<String, LayoutSection> sections;
+        @AuraEnabled public DateTime cachedAt;
+        @AuraEnabled public String source; // 'tooling_api' or 'describe_fallback'
+        
+        public LayoutMetadata() {
+            this.fields = new List<String>();
+            this.sections = new Map<String, LayoutSection>();
+            this.cachedAt = DateTime.now();
+        }
+    }
+    
+    public class LayoutSection {
+        @AuraEnabled public String heading;
+        @AuraEnabled public List<String> fields;
+        
+        public LayoutSection(String heading) {
+            this.heading = heading;
+            this.fields = new List<String>();
+        }
+    }
     
     /**
      * @description Wrapper class for validation rule information
      */
     public class ValidationRuleInfo {
-        public String validationName;
-        public String errorMessage;
-        public String errorDisplayField;
-        public Boolean active;
-        public String description;
+        @AuraEnabled public String validationName;
+        @AuraEnabled public String errorMessage;
+        @AuraEnabled public String errorDisplayField;
+        @AuraEnabled public Boolean active;
+        @AuraEnabled public String description;
+        @AuraEnabled public String formula;
     }
     
     /**
@@ -82,54 +120,236 @@ public with sharing class MetadataQueryService {
     }
     
     /**
-     * @description Get all fields on a page layout
-     * Note: This is a simplified version - full page layout metadata requires Metadata API
-     * Returns all fields accessible on the object as a proxy
+     * @description Get all fields on a page layout (REAL IMPLEMENTATION)
+     * Uses Tooling API if available, falls back to describe-based guess
      * @param objectName API name of the object
-     * @param layoutName Name of the page layout (currently not used - returns all fields)
-     * @return List of field API names
+     * @param recordTypeId Record Type ID (null for default layout)
+     * @return List of field API names on the layout
      */
-    public static List<String> getPageLayoutFields(String objectName, String layoutName) {
-        List<String> fieldNames = new List<String>();
-        
+    public static List<String> getPageLayoutFields(String objectName, Id recordTypeId) {
         try {
             if (String.isBlank(objectName)) {
                 System.debug(LoggingLevel.WARN, 'Object name is blank');
-                return fieldNames;
+                return new List<String>();
             }
             
-            Map<String, Schema.SObjectField> fieldMap = getFieldMap(objectName);
+            // Get layout name
+            String layoutName = getLayoutNameForRecordType(objectName, recordTypeId);
+            String cacheKey = objectName + '_' + (recordTypeId != null ? recordTypeId : 'default');
             
-            if (fieldMap == null) {
-                System.debug(LoggingLevel.WARN, 'Object does not exist: ' + objectName);
-                return fieldNames;
+            // Check cache first
+            if (isCacheValid(cacheKey) && layoutCache.containsKey(cacheKey)) {
+                System.debug('Returning cached layout fields for: ' + cacheKey);
+                return layoutCache.get(cacheKey).fields;
             }
             
-            // Get all field names
-            // Note: In a full implementation, you would use Metadata API to get actual layout fields
-            // This returns all fields as a simplified version
-            for (String fieldName : fieldMap.keySet()) {
-                Schema.DescribeFieldResult fieldDescribe = fieldMap.get(fieldName).getDescribe();
-                
-                // Only include accessible fields (user can view)
-                if (fieldDescribe.isAccessible()) {
-                    fieldNames.add(fieldDescribe.getName());
-                }
+            // Try Tooling API first (real layout data)
+            LayoutMetadata layout = fetchLayoutViaToolingAPI(layoutName, objectName);
+            
+            if (layout != null && !layout.fields.isEmpty()) {
+                layout.source = 'tooling_api';
+                layoutCache.put(cacheKey, layout);
+                cacheTimestamps.put(cacheKey, DateTime.now());
+                System.debug('Fetched ' + layout.fields.size() + ' fields via Tooling API');
+                return layout.fields;
             }
             
-            System.debug('Found ' + fieldNames.size() + ' accessible fields on ' + objectName);
+            // Fallback: Use describe-based guess
+            System.debug('Tooling API failed, using describe fallback');
+            layout = getLayoutFieldsViaDescribe(objectName);
+            layout.source = 'describe_fallback';
+            layoutCache.put(cacheKey, layout);
+            cacheTimestamps.put(cacheKey, DateTime.now());
+            
+            return layout.fields;
             
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error getting page layout fields: ' + e.getMessage());
+            return new List<String>();
         }
-        
-        return fieldNames;
     }
     
     /**
-     * @description Get validation rules for an object
-     * Note: This requires querying ValidationRule metadata - simplified version returns empty list
-     * Full implementation would use Tooling API or Metadata API
+     * @description Check if a specific field is on a page layout
+     * @param objectName API name of the object
+     * @param fieldName API name of the field
+     * @param recordTypeId Record Type ID (null for default)
+     * @return Boolean indicating if field is on layout
+     */
+    public static Boolean isFieldOnPageLayout(String objectName, String fieldName, Id recordTypeId) {
+        try {
+            List<String> layoutFields = getPageLayoutFields(objectName, recordTypeId);
+            
+            // Case-insensitive search
+            for (String layoutField : layoutFields) {
+                if (layoutField.equalsIgnoreCase(fieldName)) {
+                    System.debug('Field ' + fieldName + ' found on layout: YES');
+                    return true;
+                }
+            }
+            
+            System.debug('Field ' + fieldName + ' found on layout: NO');
+            return false;
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error checking field on layout: ' + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * @description Fetch layout metadata via Tooling API
+     * @param layoutName Name of the layout
+     * @param objectName Object API name
+     * @return LayoutMetadata or null if failed
+     */
+    @TestVisible
+    private static LayoutMetadata fetchLayoutViaToolingAPI(String layoutName, String objectName) {
+        try {
+            // Build Tooling API query
+            String query = 'SELECT Metadata FROM Layout WHERE Name = \'' + 
+                          String.escapeSingleQuotes(layoutName) + '\'';
+            
+            HttpRequest req = new HttpRequest();
+            req.setEndpoint('callout:Salesforce_Tooling_API/query?q=' + 
+                           EncodingUtil.urlEncode(query, 'UTF-8'));
+            req.setMethod('GET');
+            req.setHeader('Content-Type', 'application/json');
+            
+            Http http = new Http();
+            HttpResponse res = http.send(req);
+            
+            if (res.getStatusCode() == 200) {
+                Map<String, Object> result = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+                List<Object> records = (List<Object>) result.get('records');
+                
+                if (records != null && !records.isEmpty()) {
+                    Map<String, Object> layout = (Map<String, Object>) records[0];
+                    Map<String, Object> metadata = (Map<String, Object>) layout.get('Metadata');
+                    
+                    return parseLayoutMetadata(metadata, layoutName, objectName);
+                }
+            } else if (res.getStatusCode() == 401) {
+                System.debug(LoggingLevel.ERROR, 'Tooling API authentication failed - check Named Credential');
+            } else {
+                System.debug(LoggingLevel.WARN, 'Tooling API returned: ' + res.getStatusCode());
+            }
+            
+        } catch (CalloutException e) {
+            System.debug(LoggingLevel.WARN, 'Tooling API callout failed: ' + e.getMessage());
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error fetching layout via Tooling API: ' + e.getMessage());
+        }
+        
+        return null;
+    }
+    
+    /**
+     * @description Parse layout metadata from Tooling API response
+     * @param metadata Layout metadata JSON
+     * @param layoutName Layout name
+     * @param objectName Object name
+     * @return LayoutMetadata wrapper
+     */
+    private static LayoutMetadata parseLayoutMetadata(
+        Map<String, Object> metadata, 
+        String layoutName, 
+        String objectName
+    ) {
+        LayoutMetadata layout = new LayoutMetadata();
+        layout.layoutName = layoutName;
+        layout.objectName = objectName;
+        
+        try {
+            Set<String> uniqueFields = new Set<String>();
+            
+            // Parse layout sections
+            List<Object> layoutSections = (List<Object>) metadata.get('layoutSections');
+            
+            if (layoutSections != null) {
+                for (Object sectionObj : layoutSections) {
+                    Map<String, Object> section = (Map<String, Object>) sectionObj;
+                    String sectionLabel = (String) section.get('label');
+                    
+                    LayoutSection layoutSection = new LayoutSection(sectionLabel);
+                    
+                    // Parse columns
+                    List<Object> layoutColumns = (List<Object>) section.get('layoutColumns');
+                    if (layoutColumns != null) {
+                        for (Object columnObj : layoutColumns) {
+                            Map<String, Object> column = (Map<String, Object>) columnObj;
+                            List<Object> layoutItems = (List<Object>) column.get('layoutItems');
+                            
+                            if (layoutItems != null) {
+                                for (Object itemObj : layoutItems) {
+                                    Map<String, Object> item = (Map<String, Object>) itemObj;
+                                    String field = (String) item.get('field');
+                                    
+                                    if (String.isNotBlank(field)) {
+                                        uniqueFields.add(field);
+                                        layoutSection.fields.add(field);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (!layoutSection.fields.isEmpty()) {
+                        layout.sections.put(sectionLabel, layoutSection);
+                    }
+                }
+            }
+            
+            layout.fields = new List<String>(uniqueFields);
+            System.debug('Parsed ' + layout.fields.size() + ' unique fields from layout');
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error parsing layout metadata: ' + e.getMessage());
+        }
+        
+        return layout;
+    }
+    
+    /**
+     * @description Fallback: Get layout fields via describe (educated guess)
+     * @param objectName Object API name
+     * @return LayoutMetadata with accessible fields
+     */
+    private static LayoutMetadata getLayoutFieldsViaDescribe(String objectName) {
+        LayoutMetadata layout = new LayoutMetadata();
+        layout.objectName = objectName;
+        layout.layoutName = objectName + ' Layout (Describe Fallback)';
+        
+        try {
+            Map<String, Schema.SObjectField> fieldMap = getFieldMap(objectName);
+            
+            if (fieldMap != null) {
+                for (String fieldName : fieldMap.keySet()) {
+                    Schema.DescribeFieldResult fieldDescribe = fieldMap.get(fieldName).getDescribe();
+                    
+                    // Include fields that are:
+                    // 1. Accessible (user can view)
+                    // 2. Not calculated (formula fields often not on layouts)
+                    // 3. Either updateable OR required (readonly required fields are on layouts)
+                    if (fieldDescribe.isAccessible() && 
+                        !fieldDescribe.isCalculated() &&
+                        (fieldDescribe.isUpdateable() || !fieldDescribe.isNillable())) {
+                        layout.fields.add(fieldDescribe.getName());
+                    }
+                }
+            }
+            
+            System.debug('Describe fallback returned ' + layout.fields.size() + ' likely fields');
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error in describe fallback: ' + e.getMessage());
+        }
+        
+        return layout;
+    }
+    
+    /**
+     * @description Get validation rules for an object via Tooling API
      * @param objectName API name of the object
      * @return List of ValidationRuleInfo wrappers
      */
@@ -155,22 +375,101 @@ public with sharing class MetadataQueryService {
             }
             
             // Query validation rules using Tooling API
-            // Note: This requires a callout to Tooling API which has its own limits
-            // For now, returning empty list as this is an advanced feature
-            // In production, implement using:
-            // HttpRequest req = new HttpRequest();
-            // req.setEndpoint('callout:Tooling_API/sobjects/ValidationRule?q=SELECT+Id,ValidationName,ErrorMessage,Active+FROM+ValidationRule+WHERE+EntityDefinition.QualifiedApiName=\'' + objectName + '\'');
+            String query = 'SELECT Id, ValidationName, ErrorMessage, ErrorDisplayField, Active, Description ' +
+                          'FROM ValidationRule ' +
+                          'WHERE EntityDefinition.QualifiedApiName = \'' + 
+                          String.escapeSingleQuotes(objectName) + '\' ' +
+                          'AND Active = true';
             
-            System.debug('Validation rules query for ' + objectName + ' (simplified implementation)');
+            HttpRequest req = new HttpRequest();
+            req.setEndpoint('callout:Salesforce_Tooling_API/query?q=' + 
+                           EncodingUtil.urlEncode(query, 'UTF-8'));
+            req.setMethod('GET');
+            req.setHeader('Content-Type', 'application/json');
             
-            // Cache the result
-            validationRulesCache.put(objectName, rules);
+            Http http = new Http();
+            HttpResponse res = http.send(req);
             
+            if (res.getStatusCode() == 200) {
+                Map<String, Object> result = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+                List<Object> records = (List<Object>) result.get('records');
+                
+                if (records != null) {
+                    for (Object recordObj : records) {
+                        Map<String, Object> record = (Map<String, Object>) recordObj;
+                        
+                        ValidationRuleInfo rule = new ValidationRuleInfo();
+                        rule.validationName = (String) record.get('ValidationName');
+                        rule.errorMessage = (String) record.get('ErrorMessage');
+                        rule.errorDisplayField = (String) record.get('ErrorDisplayField');
+                        rule.active = (Boolean) record.get('Active');
+                        rule.description = (String) record.get('Description');
+                        
+                        rules.add(rule);
+                    }
+                }
+                
+                System.debug('Found ' + rules.size() + ' active validation rules for ' + objectName);
+                
+                // Cache the results
+                validationRulesCache.put(objectName, rules);
+            } else {
+                System.debug(LoggingLevel.WARN, 'Tooling API returned: ' + res.getStatusCode());
+            }
+            
+        } catch (CalloutException e) {
+            System.debug(LoggingLevel.WARN, 'Validation rules callout failed: ' + e.getMessage());
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error getting validation rules: ' + e.getMessage());
         }
         
         return rules;
+    }
+    
+    /**
+     * @description Get layout name for a record type
+     * @param objectName API name of the object
+     * @param recordTypeId Record Type ID (null for default)
+     * @return Layout name
+     */
+    private static String getLayoutNameForRecordType(String objectName, Id recordTypeId) {
+        try {
+            if (recordTypeId != null) {
+                List<RecordType> rts = [
+                    SELECT DeveloperName 
+                    FROM RecordType 
+                    WHERE Id = :recordTypeId 
+                    LIMIT 1
+                ];
+                
+                if (!rts.isEmpty()) {
+                    return objectName + '-' + rts[0].DeveloperName + ' Layout';
+                }
+            }
+            
+            // Return default layout name
+            return objectName + '-' + objectName + ' Layout';
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error getting layout name: ' + e.getMessage());
+            return objectName + '-' + objectName + ' Layout';
+        }
+    }
+    
+    /**
+     * @description Check if cache is still valid
+     * @param cacheKey Cache key
+     * @return Boolean indicating if cache is valid
+     */
+    private static Boolean isCacheValid(String cacheKey) {
+        if (!cacheTimestamps.containsKey(cacheKey)) {
+            return false;
+        }
+        
+        DateTime cachedAt = cacheTimestamps.get(cacheKey);
+        DateTime expiresAt = cachedAt.addMinutes(CACHE_DURATION_MINUTES);
+        
+        return DateTime.now() < expiresAt;
     }
     
     /**
@@ -189,7 +488,6 @@ public with sharing class MetadataQueryService {
             
             // Check cache first
             if (fieldMapCache.containsKey(objectKey)) {
-                System.debug('Returning cached field map for ' + objectName);
                 return fieldMapCache.get(objectKey);
             }
             
@@ -208,9 +506,6 @@ public with sharing class MetadataQueryService {
             // Cache the result
             fieldMapCache.put(objectKey, fieldMap);
             
-            System.debug('Retrieved and cached field map for ' + objectName + 
-                        ' (' + fieldMap.size() + ' fields)');
-            
             return fieldMap;
             
         } catch (Exception e) {
@@ -227,34 +522,24 @@ public with sharing class MetadataQueryService {
     public static Schema.DescribeSObjectResult getObjectDescribe(String objectName) {
         try {
             if (String.isBlank(objectName)) {
-                System.debug(LoggingLevel.WARN, 'Object name is blank');
                 return null;
             }
             
             String objectKey = objectName.toLowerCase();
             
-            // Check cache first
             if (objectDescribeCache.containsKey(objectKey)) {
-                System.debug('Returning cached object describe for ' + objectName);
                 return objectDescribeCache.get(objectKey);
             }
             
-            // Get from global describe
             Map<String, Schema.SObjectType> gd = getGlobalDescribe();
             Schema.SObjectType objectType = gd.get(objectKey);
             
             if (objectType == null) {
-                System.debug(LoggingLevel.WARN, 'Object type not found: ' + objectName);
                 return null;
             }
             
-            // Get describe result
             Schema.DescribeSObjectResult objectDescribe = objectType.getDescribe();
-            
-            // Cache the result
             objectDescribeCache.put(objectKey, objectDescribe);
-            
-            System.debug('Retrieved and cached object describe for ' + objectName);
             
             return objectDescribe;
             
@@ -270,11 +555,7 @@ public with sharing class MetadataQueryService {
      */
     private static Map<String, Schema.SObjectType> getGlobalDescribe() {
         if (globalDescribeCache == null) {
-            System.debug('Performing global describe (not cached)');
             globalDescribeCache = Schema.getGlobalDescribe();
-            System.debug('Global describe completed: ' + globalDescribeCache.size() + ' objects');
-        } else {
-            System.debug('Returning cached global describe');
         }
         return globalDescribeCache;
     }
@@ -288,21 +569,18 @@ public with sharing class MetadataQueryService {
     public static Schema.DescribeFieldResult getFieldDescribe(String objectName, String fieldName) {
         try {
             if (String.isBlank(objectName) || String.isBlank(fieldName)) {
-                System.debug(LoggingLevel.WARN, 'Object name or field name is blank');
                 return null;
             }
             
             Map<String, Schema.SObjectField> fieldMap = getFieldMap(objectName);
             
             if (fieldMap == null) {
-                System.debug(LoggingLevel.WARN, 'Object does not exist: ' + objectName);
                 return null;
             }
             
             Schema.SObjectField field = fieldMap.get(fieldName.toLowerCase());
             
             if (field == null) {
-                System.debug(LoggingLevel.WARN, 'Field does not exist: ' + objectName + '.' + fieldName);
                 return null;
             }
             
@@ -328,13 +606,7 @@ public with sharing class MetadataQueryService {
                 return false;
             }
             
-            // Field is required if it's not nillable and has no default value
-            Boolean isRequired = !fieldDescribe.isNillable() && 
-                                !fieldDescribe.isDefaultedOnCreate();
-            
-            System.debug('Field required check: ' + objectName + '.' + fieldName + ' = ' + isRequired);
-            
-            return isRequired;
+            return !fieldDescribe.isNillable() && !fieldDescribe.isDefaultedOnCreate();
             
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error checking if field is required: ' + e.getMessage());
@@ -353,20 +625,15 @@ public with sharing class MetadataQueryService {
         try {
             Map<String, Schema.SObjectField> fieldMap = getFieldMap(objectName);
             
-            if (fieldMap == null) {
-                return requiredFields;
-            }
-            
-            for (String fieldName : fieldMap.keySet()) {
-                Schema.DescribeFieldResult fieldDescribe = fieldMap.get(fieldName).getDescribe();
-                
-                // Check if field is required
-                if (!fieldDescribe.isNillable() && !fieldDescribe.isDefaultedOnCreate()) {
-                    requiredFields.add(fieldDescribe.getName());
+            if (fieldMap != null) {
+                for (String fieldName : fieldMap.keySet()) {
+                    Schema.DescribeFieldResult fieldDescribe = fieldMap.get(fieldName).getDescribe();
+                    
+                    if (!fieldDescribe.isNillable() && !fieldDescribe.isDefaultedOnCreate()) {
+                        requiredFields.add(fieldDescribe.getName());
+                    }
                 }
             }
-            
-            System.debug('Found ' + requiredFields.size() + ' required fields on ' + objectName);
             
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error getting required fields: ' + e.getMessage());
@@ -376,14 +643,16 @@ public with sharing class MetadataQueryService {
     }
     
     /**
-     * @description Clear all caches (useful for testing or after metadata changes)
+     * @description Clear all caches
      */
     @TestVisible
-    private static void clearCache() {
+    public static void clearCache() {
         globalDescribeCache = null;
         fieldMapCache.clear();
         objectDescribeCache.clear();
         validationRulesCache.clear();
+        layoutCache.clear();
+        cacheTimestamps.clear();
         System.debug('All metadata caches cleared');
     }
     
@@ -398,6 +667,7 @@ public with sharing class MetadataQueryService {
         stats.put('fieldMapsCached', fieldMapCache.size());
         stats.put('objectDescribesCached', objectDescribeCache.size());
         stats.put('validationRulesCached', validationRulesCache.size());
+        stats.put('layoutsCached', layoutCache.size());
         
         return stats;
     }
