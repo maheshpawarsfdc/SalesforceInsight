@@ -318,16 +318,42 @@ public with sharing class DiagnosticAssistantController {
                 if (diagnostic == 'checkRecordAccess' && !analysis.recordIds.isEmpty()) {
                     for (String recordId : analysis.recordIds) {
                         runRecordAccessCheck(recordId, userId, report);
+
+                        runSharingAnalysisCheck(recordId, userId, report);
                     }
                 }
                 
                 if (diagnostic == 'checkPageLayout' && !analysis.objectsInvolved.isEmpty()) {
                     for (String objectName : analysis.objectsInvolved) {
-                        runPageLayoutCheck(objectName, report);
+                        // Check SPECIFIC field if mentioned
+                        if (!analysis.fieldsInvolved.isEmpty()) {
+                            for (String fieldName : analysis.fieldsInvolved) {
+                                runPageLayoutCheck(objectName, fieldName, report);
+                            }
+                        } else {
+                            // No specific field - general layout info
+                            runPageLayoutCheck(objectName, null, report);
+                        }
                     }
                 }
-                
-            }
+                // NEW: Check validation rules if save error
+                if (diagnostic == 'checkValidationRules' && !analysis.objectsInvolved.isEmpty()) {
+                    for (String objectName : analysis.objectsInvolved) {
+                        runValidationRuleCheck(objectName, report);
+                    }
+                }
+        }
+        if (analysis.issueCategory == 'field_visibility' && 
+            !analysis.objectsInvolved.isEmpty() && 
+            !analysis.fieldsInvolved.isEmpty()) {
+            
+            performRootCauseAnalysis(
+                analysis.objectsInvolved[0],
+                analysis.fieldsInvolved[0],
+                userId,
+                report
+            );
+        }
             
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error during diagnostics: ' + e.getMessage());
@@ -340,7 +366,183 @@ public with sharing class DiagnosticAssistantController {
         System.debug(report.plainTextReport);
         return report;
     }
+
     
+    /**
+     * @description Run sharing analysis for record access
+     */
+    private static void runSharingAnalysisCheck(
+        String recordId,
+        Id userId,
+        DiagnosticReportBuilder.DiagnosticReport report
+    ) {
+        DiagnosticReportBuilder.DiagnosticFinding finding = 
+            new DiagnosticReportBuilder.DiagnosticFinding();
+        finding.sequenceNumber = report.findings.size() + 1;
+        finding.category = 'Sharing Analysis';
+        finding.title = 'Sharing & Access Analysis';
+        
+        try {
+            SharingDiagnosticService.SharingAnalysis analysis = 
+                SharingDiagnosticService.analyzeRecordSharing(recordId, userId);
+            
+            if (analysis.hasAccess) {
+                finding.status = 'PASS';
+                finding.statusIcon = '✓';
+                finding.severity = DiagnosticReportBuilder.Severity.INFO;
+                finding.details.add('✓ User has access to this record');
+                finding.details.add('Access via: ' + String.join(analysis.accessSources, ', '));
+                finding.details.add('OWD Setting: ' + analysis.owdSetting);
+            } else {
+                finding.status = 'FAIL';
+                finding.statusIcon = '✗';
+                finding.severity = DiagnosticReportBuilder.Severity.HIGH;
+                finding.details.add('✗ User does NOT have access to this record');
+                finding.details.add('OWD Setting: ' + analysis.owdSetting);
+                finding.details.add('Is Owner: ' + (analysis.isOwner ? 'Yes' : 'No'));
+                finding.details.add('Has Role Access: ' + (analysis.hasRoleAccess ? 'Yes' : 'No'));
+                finding.impact = 'User cannot view this record due to sharing restrictions';
+            }
+            
+            if (String.isNotBlank(analysis.recommendation)) {
+                finding.details.add('Recommendation: ' + analysis.recommendation);
+            }
+            
+        } catch (Exception e) {
+            finding.status = 'WARN';
+            finding.statusIcon = '⚠';
+            finding.severity = DiagnosticReportBuilder.Severity.MEDIUM;
+            finding.details.add('Could not complete sharing analysis: ' + e.getMessage());
+        }
+        
+        report.findings.add(finding);
+    }
+
+    /**
+    * @description Check validation rules on object
+    */
+    private static void runValidationRuleCheck(
+        String objectName,
+        DiagnosticReportBuilder.DiagnosticReport report
+    ) {
+        DiagnosticReportBuilder.DiagnosticFinding finding = 
+            new DiagnosticReportBuilder.DiagnosticFinding();
+        finding.sequenceNumber = report.findings.size() + 1;
+        finding.category = 'Validation Rules';
+        finding.title = 'Active Validation Rules on ' + objectName;
+        
+        try {
+            List<MetadataQueryService.ValidationRuleInfo> rules = 
+                MetadataQueryService.getValidationRules(objectName);
+            
+            if (rules.isEmpty()) {
+                finding.status = 'INFO';
+                finding.statusIcon = 'ℹ';
+                finding.severity = DiagnosticReportBuilder.Severity.INFO;
+                finding.details.add('No active validation rules found on ' + objectName);
+            } else {
+                finding.status = 'WARN';
+                finding.statusIcon = '⚠';
+                finding.severity = DiagnosticReportBuilder.Severity.MEDIUM;
+                finding.details.add('Found ' + rules.size() + ' active validation rule(s)');
+                
+                Integer count = 0;
+                for (MetadataQueryService.ValidationRuleInfo rule : rules) {
+                    if (count < 5) { // Show first 5
+                        finding.details.add('Rule: ' + rule.validationName);
+                        if (String.isNotBlank(rule.errorMessage)) {
+                            finding.details.add('  Error: ' + rule.errorMessage);
+                        }
+                    }
+                    count++;
+                }
+                
+                if (rules.size() > 5) {
+                    finding.details.add('... and ' + (rules.size() - 5) + ' more rules');
+                }
+                
+                finding.impact = 'Validation rules may block saving if criteria are not met';
+            }
+            
+        } catch (Exception e) {
+            finding.status = 'WARN';
+            finding.statusIcon = '⚠';
+            finding.severity = DiagnosticReportBuilder.Severity.LOW;
+            finding.details.add('Could not retrieve validation rules: ' + e.getMessage());
+        }
+        
+        report.findings.add(finding);
+    }
+    /**
+     * @description Perform root cause analysis and add to report
+     */
+    private static void performRootCauseAnalysis(
+        String objectName,
+        String fieldName,
+        Id userId,
+        DiagnosticReportBuilder.DiagnosticReport report
+    ) {
+        try {
+            System.debug('=== PERFORMING ROOT CAUSE ANALYSIS ===');
+            
+            RootCauseAnalyzer.RootCause rootCause = 
+                RootCauseAnalyzer.analyzeFieldVisibility(objectName, fieldName, userId, report.findings);
+            
+            // Add root cause as special finding
+            DiagnosticReportBuilder.DiagnosticFinding finding = 
+                new DiagnosticReportBuilder.DiagnosticFinding();
+            finding.sequenceNumber = report.findings.size() + 1;
+            finding.category = 'Root Cause Analysis';
+            finding.title = '🎯 ROOT CAUSE IDENTIFIED';
+            finding.status = 'INFO';
+            finding.statusIcon = '🎯';
+            finding.severity = DiagnosticReportBuilder.Severity.INFO;
+            
+            finding.details.add('PRIMARY CAUSE: ' + rootCause.primaryCause);
+            finding.details.add('Confidence: ' + rootCause.confidence + '%');
+            finding.details.add('');
+            finding.details.add('EXPLANATION:');
+            finding.details.add(rootCause.explanation);
+            
+            if (!rootCause.solutionSteps.isEmpty()) {
+                finding.details.add('');
+                finding.details.add('SOLUTION STEPS:');
+                Integer stepNum = 1;
+                for (String step : rootCause.solutionSteps) {
+                    finding.details.add(stepNum + '. ' + step);
+                    stepNum++;
+                }
+            }
+            
+            if (String.isNotBlank(rootCause.whoCanFix)) {
+                finding.details.add('');
+                finding.details.add('WHO CAN FIX: ' + rootCause.whoCanFix);
+            }
+            
+            if (!rootCause.contributingFactors.isEmpty()) {
+                finding.details.add('');
+                finding.details.add('OTHER FACTORS TO CONSIDER:');
+                for (String factor : rootCause.contributingFactors) {
+                    finding.details.add('• ' + factor);
+                }
+            }
+            
+            report.findings.add(finding);
+            
+            // Update report summary with root cause
+            report.summary.rootCause = rootCause.primaryCause;
+            
+            System.debug('Root cause added to report: ' + rootCause.primaryCause);
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error performing root cause analysis: ' + e.getMessage());
+        }
+    }
+
+
+    
+
+
     // NOTE: The rest of the methods remain UNCHANGED from your original file
     // I'm including them here for completeness
     
@@ -394,29 +596,54 @@ public with sharing class DiagnosticAssistantController {
     
     private static void runPageLayoutCheck(
         String objectName,
+        String fieldName,
         DiagnosticReportBuilder.DiagnosticReport report
     ) {
-        List<String> layoutFields = MetadataQueryService.getPageLayoutFields(objectName, null);
-        
         DiagnosticReportBuilder.DiagnosticFinding finding = 
             new DiagnosticReportBuilder.DiagnosticFinding();
         finding.sequenceNumber = report.findings.size() + 1;
         finding.category = 'Page Layout';
-        finding.title = 'Accessible Fields on ' + objectName;
-        finding.status = 'PASS';
-        finding.statusIcon = '✓';
-        finding.severity = DiagnosticReportBuilder.Severity.INFO;
-        finding.details.add('Found ' + layoutFields.size() + ' accessible fields');
         
-        if (!layoutFields.isEmpty()) {
-            Integer count = Math.min(5, layoutFields.size());
-            List<String> sampleFields = new List<String>();
-            for (Integer i = 0; i < count; i++) {
-                sampleFields.add(layoutFields[i]);
+        if (String.isNotBlank(fieldName)) {
+            // Check SPECIFIC field on layout
+            finding.title = 'Page Layout Check: ' + objectName + '.' + fieldName;
+            
+            Boolean isOnLayout = MetadataQueryService.isFieldOnPageLayout(objectName, fieldName, null);
+            
+            if (isOnLayout) {
+                finding.status = 'PASS';
+                finding.statusIcon = '✓';
+                finding.severity = DiagnosticReportBuilder.Severity.INFO;
+                finding.details.add('✓ Field "' + fieldName + '" IS on the page layout');
+            } else {
+                finding.status = 'FAIL';
+                finding.statusIcon = '✗';
+                finding.severity = DiagnosticReportBuilder.Severity.HIGH;
+                finding.details.add('✗ Field "' + fieldName + '" is NOT on the page layout');
+                finding.impact = 'User cannot see this field because it is not added to the page layout';
+                finding.details.add('Solution: Add field to page layout in Setup → Object Manager → ' + 
+                                objectName + ' → Page Layouts');
             }
-            finding.details.add('Sample fields: ' + String.join(sampleFields, ', '));
-            if (layoutFields.size() > 5) {
-                finding.details.add('... and ' + (layoutFields.size() - 5) + ' more');
+        } else {
+            // General layout info
+            List<String> layoutFields = MetadataQueryService.getPageLayoutFields(objectName, null);
+            
+            finding.title = 'Page Layout Fields on ' + objectName;
+            finding.status = 'INFO';
+            finding.statusIcon = 'ℹ';
+            finding.severity = DiagnosticReportBuilder.Severity.INFO;
+            finding.details.add('Found ' + layoutFields.size() + ' fields on layout');
+            
+            if (!layoutFields.isEmpty()) {
+                Integer count = Math.min(5, layoutFields.size());
+                List<String> sampleFields = new List<String>();
+                for (Integer i = 0; i < count; i++) {
+                    sampleFields.add(layoutFields[i]);
+                }
+                finding.details.add('Sample fields: ' + String.join(sampleFields, ', '));
+                if (layoutFields.size() > 5) {
+                    finding.details.add('... and ' + (layoutFields.size() - 5) + ' more');
+                }
             }
         }
         

@@ -42,8 +42,77 @@ public with sharing class AIPromptService {
             
             '=== CRITICAL INSTRUCTION ===\n' +
             'You MUST use the diagnostic results provided below. DO NOT give generic advice.\n' +
-            'If the diagnostic results show specific permission failures, state them CLEARLY and DIRECTLY.\n' +
-            'Example: "I checked Sarah\'s permissions and found that her profile \'Standard User\' does NOT have Read permission on the Account object."\n\n' +
+            'If the diagnostic results show specific permission failures, state them CLEARLY and DIRECTLY.\n\n' +
+            
+            '=== DIAGNOSTIC INTERPRETATION LOGIC ===\n' +
+            'Follow this decision tree when analyzing field visibility issues:\n\n' +
+            
+            'SCENARIO 1: Field Not on Page Layout\n' +
+            'IF diagnostic shows:\n' +
+            '  • Field Exists: YES\n' +
+            '  • Can View (FLS): YES\n' +
+            '  • Can Edit (FLS): YES\n' +
+            '  • Page Layout: FIELD NOT ON LAYOUT (or "is NOT on the page layout")\n' +
+            'THEN the issue is: **The field is not on the page layout**\n' +
+            '  Your response MUST say:\n' +
+            '  "The field \'{fieldName}\' exists and you have Field-Level Security permission to view it. However, you cannot see it because the field is NOT on the page layout. Ask your admin to add it to the layout in Setup → Object Manager → {objectName} → Page Layouts."\n' +
+            '  DO NOT say "check FLS" - FLS is already granted!\n' +
+            '  DO NOT say "might be permissions" - we KNOW it\'s the layout!\n\n' +
+            
+            'SCENARIO 2: No Field-Level Security\n' +
+            'IF diagnostic shows:\n' +
+            '  • Field Exists: YES\n' +
+            '  • Can View (FLS): NO\n' +
+            'THEN the issue is: **Field-Level Security not granted**\n' +
+            '  Your response MUST say:\n' +
+            '  "The field \'{fieldName}\' exists, but you do NOT have Field-Level Security permission to view it. Your profile \'{profileName}\' does not have \'Read\' access to this field. Ask your admin to grant Field-Level Security in Setup → Profiles → {profileName} → Object Settings → {objectName} → {fieldName}."\n\n' +
+            
+            'SCENARIO 3: Field Does Not Exist\n' +
+            'IF diagnostic shows:\n' +
+            '  • Field Exists: NO\n' +
+            'THEN the issue is: **Field does not exist**\n' +
+            '  Your response MUST say:\n' +
+            '  "The field \'{fieldName}\' does not exist on the {objectName} object. Please verify the field name spelling, or the field may have been deleted or renamed."\n\n' +
+            
+            'SCENARIO 4: No Object Access\n' +
+            'IF diagnostic shows:\n' +
+            '  • Object Read: NO (or "Can Read: NO")\n' +
+            'THEN the issue is: **No object access**\n' +
+            '  Your response MUST say:\n' +
+            '  "You do NOT have Read permission on the {objectName} object. Your profile \'{profileName}\' does not allow viewing this type of record at all. Ask your admin to grant Object permissions in Setup → Profiles → {profileName} → Object Settings → {objectName}."\n\n' +
+            
+            '=== EXAMPLES OF GOOD VS BAD RESPONSES ===\n\n' +
+            
+            'BAD RESPONSE (Contradictory - DO NOT DO THIS):\n' +
+            '"The diagnostic shows that the Issue_Type__c field exists and you have Field-Level Security to view it. However, there are multiple permission issues. You should check your profile settings and make sure you have the right permissions."\n' +
+            '❌ This is WRONG because:\n' +
+            '  - It says FLS is granted, then says to check permissions (contradictory)\n' +
+            '  - It doesn\'t identify THE root cause (just says "multiple issues")\n' +
+            '  - It\'s vague and not actionable\n\n' +
+            
+            'GOOD RESPONSE (Clear and Specific - DO THIS):\n' +
+            '"I checked your permissions for the Issue_Type__c field on Diagnostic_Session__c.\n\n' +
+            'FINDINGS:\n' +
+            '• Field exists: YES ✓\n' +
+            '• Can view (FLS): YES ✓\n' +
+            '• Can edit (FLS): YES ✓\n' +
+            '• On page layout: NO ✗\n\n' +
+            'ISSUE: You cannot see this field because it is NOT on the page layout.\n\n' +
+            'WHY: Even though you have permission to view Issue_Type__c, Salesforce only displays fields that are added to the page layout.\n\n' +
+            'HOW TO FIX:\n' +
+            '1. Ask your Salesforce administrator to:\n' +
+            '2. Go to Setup → Object Manager → Diagnostic_Session__c\n' +
+            '3. Click Page Layouts\n' +
+            '4. Edit the layout you use\n' +
+            '5. Drag Issue_Type__c from the field palette onto the layout\n' +
+            '6. Save the layout\n\n' +
+            'WHO CAN HELP: Your Salesforce administrator can make this change.\n\n' +
+            'Need anything else?"\n' +
+            '✅ This is CORRECT because:\n' +
+            '  - It clearly states the findings\n' +
+            '  - It identifies ONE root cause (page layout)\n' +
+            '  - It provides specific, actionable steps\n' +
+            '  - It doesn\'t suggest checking things that are already correct\n\n' +
             
             '=== RESPONSE FORMAT ===\n' +
             '1. DIAGNOSTIC FINDINGS: State EXACTLY what the diagnostic checks found (use specific field/object names, permission states)\n' +
@@ -68,6 +137,7 @@ public with sharing class AIPromptService {
             'When you must use technical terms, explain them:\n' +
             '- Field-Level Security (FLS) → "permission to view/edit specific fields"\n' +
             '- Object Permissions → "permission to access this type of record"\n' +
+            '- Page Layout → "the arrangement of fields you see on a record page"\n' +
             '- Sharing Rules → "rules that control who can see records"\n' +
             '- Profile → "user type that determines base permissions"\n' +
             '- Permission Set → "additional permissions added to a profile"\n\n' +
@@ -76,31 +146,12 @@ public with sharing class AIPromptService {
             '- Base ALL answers on the diagnostic results provided - DO NOT speculate\n' +
             '- If diagnostic shows "Can Read: NO" - STATE THIS CLEARLY AND DIRECTLY\n' +
             '- If diagnostic shows "Can Edit: NO" - STATE THIS CLEARLY AND DIRECTLY\n' +
+            '- If diagnostic shows "NOT on page layout" - STATE THIS AS THE ROOT CAUSE\n' +
             '- NEVER say "might" or "could be" when diagnostics show definitive results\n' +
             '- Quote exact profile names, permission set names from diagnostic results\n' +
             '- If diagnostic data is insufficient, say so clearly\n' +
             '- ALWAYS provide at least one actionable next step\n' +
             '- Keep responses under 300 words unless complexity requires more\n\n' +
-            
-            '=== ADMIN MODE RESPONSE EXAMPLE ===\n' +
-            '"I am diagnosing permissions for **Sarah Johnson**.\n\n' +
-            'DIAGNOSTIC FINDINGS:\n' +
-            '• User: Sarah Johnson (sarah.johnson@company.com)\n' +
-            '• Profile: Standard User\n' +
-            '• Object: Account\n' +
-            '• Can Read: NO ✗\n' +
-            '• Can Create: NO ✗\n' +
-            '• Can Edit: NO ✗\n\n' +
-            'ISSUE: Sarah cannot access Account records because her profile lacks Read permission.\n\n' +
-            'WHY: Her \'Standard User\' profile does not have the \'Read\' permission enabled for Accounts.\n\n' +
-            'HOW TO FIX (for you as admin):\n' +
-            '1. Go to Setup → Profiles → Standard User\n' +
-            '2. Under Object Settings, find Account\n' +
-            '3. Enable Read permission (and Create/Edit if needed)\n' +
-            '4. Save the profile\n' +
-            'Alternatively: Create a Permission Set with Account access and assign it to Sarah\n\n' +
-            'WHO CAN HELP: You (as System Administrator) can make these changes now\n\n' +
-            'Would you like me to check any other permissions for Sarah?"\n\n' +
             
             'Version: ' + PROMPT_VERSION;
     }
