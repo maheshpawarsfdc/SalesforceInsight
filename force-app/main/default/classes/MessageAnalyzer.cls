@@ -12,8 +12,6 @@ public with sharing class MessageAnalyzer {
     // User identification patterns (for admin diagnostics)
     private static final Pattern USER_ID_PATTERN = Pattern.compile('\\b(005[a-zA-Z0-9]{12,15})\\b');
     private static final Pattern EMAIL_PATTERN = Pattern.compile('\\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})\\b');
-    // Using (?i) for case-insensitive matching inline
-    private static final Pattern NAME_PATTERN = Pattern.compile('(?i)(?:for|user|check|diagnose)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)+)');
     
     // Regex patterns for entity extraction
     private static final Pattern RECORD_ID_PATTERN = Pattern.compile('\\b([a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})\\b');
@@ -157,7 +155,8 @@ public with sharing class MessageAnalyzer {
 
     /**
      * @description Extract target user from message (for admin diagnostics)
-     * NEW METHOD
+     * IMPROVED: Better parsing to extract just the user identifier
+     * HANDLES: "my permissions", "for me", and ignores non-user keywords
      */
     private static void extractTargetUser(String message, MessageAnalysis analysis) {
         if (String.isBlank(message)) {
@@ -165,6 +164,19 @@ public with sharing class MessageAnalyzer {
         }
         
         System.debug('=== EXTRACTING TARGET USER ===');
+        String lowerMessage = message.toLowerCase();
+        
+        // EARLY EXIT: Check for self-reference keywords
+        // If user says "my", "me", "I", they're asking about themselves
+        if (lowerMessage.contains(' my ') || 
+            lowerMessage.contains('for me') || 
+            lowerMessage.contains('check me') ||
+            lowerMessage.startsWith('my ') ||
+            lowerMessage.contains(' i ') ||
+            lowerMessage.startsWith('i ')) {
+            System.debug('Self-reference detected - no target user extraction');
+            return; // No target user - use current user
+        }
         
         // Method 1: Direct User ID (005...)
         Matcher userIdMatcher = USER_ID_PATTERN.matcher(message);
@@ -175,7 +187,7 @@ public with sharing class MessageAnalyzer {
             return;
         }
         
-        // Method 2: Email address
+        // Method 2: Email address (most reliable)
         Matcher emailMatcher = EMAIL_PATTERN.matcher(message);
         if (emailMatcher.find()) {
             String email = emailMatcher.group(1);
@@ -184,24 +196,89 @@ public with sharing class MessageAnalyzer {
             return;
         }
         
-        // Method 3: User name in context
-        Matcher nameMatcher = NAME_PATTERN.matcher(message);
-        if (nameMatcher.find()) {
-            String name = nameMatcher.group(1);
-            analysis.targetUserName = name;
-            System.debug('Found user name: ' + name);
+        // Method 3: Username keyword pattern
+        // Matches: "for username XXXXX" or "username: XXXXX"
+        Pattern usernamePattern = Pattern.compile('(?i)(?:for\\s+)?username[:\\s]+([^\\s]+(?:@[^\\s]+)?)');
+        Matcher usernameMatcher = usernamePattern.matcher(message);
+        if (usernameMatcher.find()) {
+            String username = usernameMatcher.group(1);
+            // Could be email or username
+            if (username.contains('@')) {
+                analysis.targetUserEmail = username;
+                System.debug('Found username (email): ' + username);
+            } else {
+                analysis.targetUserName = username;
+                System.debug('Found username: ' + username);
+            }
             return;
         }
         
-        // Method 4: Possessive names (John's, Sarah's)
-        // Using (?i) for case-insensitive
-        Pattern possessivePattern = Pattern.compile('(?i)\\b([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)(?:\'s|s\')\\s+(?:permissions|access|issue)');
+        // Method 4: Name extraction with better validation
+        // Matches: "for [FirstName] [LastName]" or "check [FirstName]"
+        // But stops at common keywords like "on", "object", "field"
+        Pattern namePattern = Pattern.compile('(?i)(?:for|check|diagnose)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)(?=\\s+on|\\s+object|\\s+field|\\s*$)');
+        Matcher nameMatcher = namePattern.matcher(message);
+        if (nameMatcher.find()) {
+            String name = nameMatcher.group(1).trim();
+            
+            // VALIDATION: Exclude common non-user keywords
+            Set<String> excludeKeywords = new Set<String>{
+                'permissions', 'permission', 'access', 'account', 'contact', 
+                'opportunity', 'field', 'object', 'check', 'diagnose', 'session',
+                'diagnostic', 'issue', 'problem', 'error', 'my', 'me', 'i'
+            };
+            
+            if (!excludeKeywords.contains(name.toLowerCase())) {
+                analysis.targetUserName = name;
+                System.debug('Found user name: ' + name);
+                return;
+            } else {
+                System.debug('Excluded keyword found in name: ' + name);
+            }
+        }
+        
+        // Method 5: Simple name after "for" with strict validation
+        // Matches: "for Suraj" but not "for me" or "for permissions"
+        Pattern simpleNamePattern = Pattern.compile('(?i)(?:for|user)\\s+([A-Z][a-z]{2,})(?=\\s+on|\\s+object|\\s+field|\\s*$)');
+        Matcher simpleNameMatcher = simpleNamePattern.matcher(message);
+        if (simpleNameMatcher.find()) {
+            String name = simpleNameMatcher.group(1).trim();
+            
+            // Exclude common keywords (expanded list)
+            Set<String> excludeKeywords = new Set<String>{
+                'permissions', 'permission', 'access', 'account', 'accounts', 
+                'contact', 'contacts', 'opportunity', 'opportunities',
+                'field', 'fields', 'object', 'objects', 'check', 'diagnose',
+                'session', 'sessions', 'diagnostic', 'issue', 'issues',
+                'problem', 'problems', 'error', 'errors', 'my', 'me', 'myself'
+            };
+            
+            if (!excludeKeywords.contains(name.toLowerCase())) {
+                analysis.targetUserName = name;
+                System.debug('Found user name (simple): ' + name);
+                return;
+            } else {
+                System.debug('Excluded keyword in simple match: ' + name);
+            }
+        }
+        
+        // Method 6: Possessive names (John's, Sarah's)
+        // But NOT "my permissions" or possessive object names
+        Pattern possessivePattern = Pattern.compile('(?i)\\b([A-Z][a-z]{2,}(?:\\s+[A-Z][a-z]+)?)(?:\'s|s\')\\s+(?:permissions|access|issue|problem)');
         Matcher possessiveMatcher = possessivePattern.matcher(message);
         if (possessiveMatcher.find()) {
-            String name = possessiveMatcher.group(1);
-            analysis.targetUserName = name;
-            System.debug('Found user name (possessive): ' + name);
-            return;
+            String name = possessiveMatcher.group(1).trim();
+            
+            // Exclude self-references and common keywords
+            Set<String> excludeKeywords = new Set<String>{
+                'my', 'account', 'contact', 'opportunity', 'object', 'field'
+            };
+            
+            if (!excludeKeywords.contains(name.toLowerCase())) {
+                analysis.targetUserName = name;
+                System.debug('Found user name (possessive): ' + name);
+                return;
+            }
         }
         
         System.debug('No target user detected - will use current user');
@@ -605,6 +682,42 @@ public with sharing class MessageAnalyzer {
         if (confidenceScore >= 70) return 'high';
         else if (confidenceScore >= 40) return 'medium';
         else return 'low';
+    }
+
+    /**
+     * @description Check if message is a self-reference (user asking about themselves)
+     * @param message User message
+     * @return Boolean indicating if this is about current user
+     */
+    private static Boolean isSelfReference(String message) {
+        if (String.isBlank(message)) {
+            return false;
+        }
+        
+        String lowerMessage = message.toLowerCase();
+        
+        // Self-reference patterns
+        List<String> selfPatterns = new List<String>{
+            ' my ', 'my ', ' me', 'for me', 'check me',
+            ' i ', 'i ', 'myself', 'current user'
+        };
+        
+        for (String pattern : selfPatterns) {
+            if (lowerMessage.contains(pattern)) {
+                return true;
+            }
+        }
+        
+        // Check if no "for [name]" pattern exists
+        Pattern forUserPattern = Pattern.compile('(?i)(?:for|user)\\s+([a-z]+)');
+        Matcher matcher = forUserPattern.matcher(message);
+        
+        if (!matcher.find()) {
+            // No "for someone" found - likely self-reference
+            return true;
+        }
+        
+        return false;
     }
 
     /**

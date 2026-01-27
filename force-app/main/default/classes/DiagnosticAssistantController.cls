@@ -37,7 +37,14 @@ public with sharing class DiagnosticAssistantController {
                         ', Confidence=' + analysis.confidence);
             
             // Layer 2.5: Determine target user (ADMIN MODE SUPPORT)
-            Id targetUserId = determineTargetUser(analysis);
+            Id targetUserId = determineTargetUser(analysis, response);
+
+            // If validation failed, response.error is already set
+            if (targetUserId == null) {
+                System.debug('❌ Target user validation failed - returning error');
+                return response; // Return error response
+            }
+        
             Id currentUserId = UserInfo.getUserId();
             System.debug('Target User ID: ' + targetUserId);
             System.debug('Is Admin Diagnostic: ' + (targetUserId != currentUserId));
@@ -130,30 +137,66 @@ public with sharing class DiagnosticAssistantController {
     
     /**
      * @description Determine which user to diagnose (ADMIN MODE SUPPORT)
+     * NOW VALIDATES USER EXISTS BEFORE PROCEEDING
      * @param analysis Message analysis with potential target user info
-     * @return User ID to diagnose for
+     * @param response Response wrapper to populate with errors if needed
+     * @return User ID to diagnose for, or null if validation failed
      */
-    private static Id determineTargetUser(MessageAnalyzer.MessageAnalysis analysis) {
+    private static Id determineTargetUser(
+        MessageAnalyzer.MessageAnalysis analysis, 
+        ResponseWrapper response
+    ) {
         Id currentUserId = UserInfo.getUserId();
         
-        // If no target user mentioned, use current user
-        if (analysis.targetUserId == null && 
-            String.isBlank(analysis.targetUserName) && 
-            String.isBlank(analysis.targetUserEmail)) {
-            System.debug('No target user detected - using current user');
-            return currentUserId;
-        }
-        
         // Check if current user is System Admin
-        if (!isSystemAdmin()) {
-            System.debug('Non-admin user - ignoring target user, using current user');
-            return currentUserId;
+        Boolean isAdmin = isSystemAdmin();
+        
+        System.debug('=== DETERMINING TARGET USER ===');
+        System.debug('Current User: ' + currentUserId);
+        System.debug('Is Admin: ' + isAdmin);
+        System.debug('Target User ID: ' + analysis.targetUserId);
+        System.debug('Target User Name: ' + analysis.targetUserName);
+        System.debug('Target User Email: ' + analysis.targetUserEmail);
+        
+        // Validate the target user
+        UserValidationResult validation = validateTargetUser(analysis);
+        
+        if (!validation.isValid) {
+            // Validation failed - return error to user
+            response.success = false;
+            response.error = validation.errorMessage;
+            
+            if (!validation.ambiguousUsers.isEmpty()) {
+                response.error += '\n\nMatching users:\n';
+                for (String user : validation.ambiguousUsers) {
+                    response.error += '• ' + user + '\n';
+                }
+            }
+            
+            System.debug('❌ User validation failed: ' + validation.errorMessage);
+            return null;
         }
         
-        // Admin is diagnosing for another user - resolve the user ID
-        return resolveTargetUserId(analysis);
+        // Validation passed
+        if (validation.isCurrentUser) {
+            System.debug('✅ Diagnosing current user: ' + validation.userName);
+            return validation.userId;
+        }
+        
+        // User is trying to diagnose someone else
+        if (!isAdmin) {
+            response.success = false;
+            response.error = 'Only System Administrators can diagnose permissions for other users. ' +
+                            'You tried to diagnose: ' + validation.userName + ' (' + validation.userEmail + ')';
+            System.debug('❌ Non-admin tried to diagnose another user');
+            return null;
+        }
+        
+        // Admin diagnosing another user - all validated
+        System.debug('✅ Admin diagnosing another user: ' + validation.userName);
+        return validation.userId;
     }
-    
+        
     /**
      * @description Check if current user is System Administrator
      * @return Boolean indicating if user is System Admin
@@ -175,92 +218,6 @@ public with sharing class DiagnosticAssistantController {
             System.debug(LoggingLevel.ERROR, 'Error checking admin status: ' + e.getMessage());
             return false;
         }
-    }
-    
-    /**
-     * @description Resolve target user ID from analysis (name, email, or direct ID)
-     * @param analysis Message analysis containing target user hints
-     * @return Resolved user ID (or current user if resolution fails)
-     */
-    private static Id resolveTargetUserId(MessageAnalyzer.MessageAnalysis analysis) {
-        Id currentUserId = UserInfo.getUserId();
-        
-        try {
-            // Priority 1: Direct User ID provided
-            if (analysis.targetUserId != null) {
-                List<User> users = [
-                    SELECT Id, Name, Email 
-                    FROM User 
-                    WHERE Id = :analysis.targetUserId 
-                    AND IsActive = true 
-                    LIMIT 1
-                ];
-                
-                if (!users.isEmpty()) {
-                    System.debug('Resolved target user by ID: ' + users[0].Name);
-                    return users[0].Id;
-                }
-            }
-            
-            // Priority 2: Email address
-            if (String.isNotBlank(analysis.targetUserEmail)) {
-                List<User> users = [
-                    SELECT Id, Name, Email 
-                    FROM User 
-                    WHERE Email = :analysis.targetUserEmail 
-                    AND IsActive = true 
-                    LIMIT 1
-                ];
-                
-                if (!users.isEmpty()) {
-                    System.debug('Resolved target user by email: ' + users[0].Name + ' (' + users[0].Email + ')');
-                    return users[0].Id;
-                } else {
-                    System.debug('No active user found with email: ' + analysis.targetUserEmail);
-                }
-            }
-            
-            // Priority 3: User name (exact or partial match)
-            if (String.isNotBlank(analysis.targetUserName)) {
-                // Try exact match first
-                List<User> users = [
-                    SELECT Id, Name, Email 
-                    FROM User 
-                    WHERE Name = :analysis.targetUserName 
-                    AND IsActive = true 
-                    LIMIT 1
-                ];
-                
-                if (!users.isEmpty()) {
-                    System.debug('Resolved target user by exact name: ' + users[0].Name);
-                    return users[0].Id;
-                }
-                
-                // Try partial match (LIKE)
-                String likePattern = '%' + analysis.targetUserName + '%';
-                users = [
-                    SELECT Id, Name, Email 
-                    FROM User 
-                    WHERE Name LIKE :likePattern 
-                    AND IsActive = true 
-                    LIMIT 1
-                ];
-                
-                if (!users.isEmpty()) {
-                    System.debug('Resolved target user by partial name: ' + users[0].Name);
-                    return users[0].Id;
-                } else {
-                    System.debug('No active user found with name: ' + analysis.targetUserName);
-                }
-            }
-            
-        } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'Error resolving target user: ' + e.getMessage());
-        }
-        
-        // Fallback: Current user
-        System.debug('Could not resolve target user - using current user');
-        return currentUserId;
     }
     
     /**
@@ -832,6 +789,197 @@ public with sharing class DiagnosticAssistantController {
             ConversationManager.clearHistory(sessionId);
         } catch (Exception e) {
             System.debug(LoggingLevel.ERROR, 'Error clearing session: ' + e.getMessage());
+        }
+    }
+    /**
+     * @description Validate that target user exists and is active
+     * @param analysis Message analysis with potential target user info
+     * @return UserValidationResult with validation outcome
+     */
+    private static UserValidationResult validateTargetUser(MessageAnalyzer.MessageAnalysis analysis) {
+        UserValidationResult result = new UserValidationResult();
+        
+        // If no target user mentioned, current user is valid
+        if (analysis.targetUserId == null && 
+            String.isBlank(analysis.targetUserName) && 
+            String.isBlank(analysis.targetUserEmail)) {
+            result.isValid = true;
+            result.userId = UserInfo.getUserId();
+            result.userName = UserInfo.getName();
+            result.isCurrentUser = true;
+            return result;
+        }
+        
+        // Target user was mentioned - validate they exist
+        try {
+            User targetUser = null;
+            
+            // Priority 1: Direct User ID
+            if (analysis.targetUserId != null) {
+                List<User> users = [
+                    SELECT Id, Name, Email, Username, IsActive 
+                    FROM User 
+                    WHERE Id = :analysis.targetUserId 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    targetUser = users[0];
+                } else {
+                    result.isValid = false;
+                    result.errorMessage = 'User ID "' + analysis.targetUserId + '" not found or user is inactive.';
+                    return result;
+                }
+            }
+            
+            // Priority 2: Email/Username (try both fields)
+            if (targetUser == null && String.isNotBlank(analysis.targetUserEmail)) {
+                String searchValue = analysis.targetUserEmail;
+                
+                // Try as Username first (more common for login identifiers)
+                List<User> users = [
+                    SELECT Id, Name, Email, Username, IsActive 
+                    FROM User 
+                    WHERE Username = :searchValue 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    targetUser = users[0];
+                    System.debug('Found user by Username: ' + searchValue);
+                } else {
+                    // Try as Email field
+                    users = [
+                        SELECT Id, Name, Email, Username, IsActive 
+                        FROM User 
+                        WHERE Email = :searchValue 
+                        AND IsActive = true 
+                        LIMIT 1
+                    ];
+                    
+                    if (!users.isEmpty()) {
+                        targetUser = users[0];
+                        System.debug('Found user by Email: ' + searchValue);
+                    } else {
+                        // One more try - case-insensitive search on both fields
+                        String likePattern = '%' + searchValue + '%';
+                        users = [
+                            SELECT Id, Name, Email, Username, IsActive 
+                            FROM User 
+                            WHERE (Username LIKE :likePattern OR Email LIKE :likePattern)
+                            AND IsActive = true 
+                            LIMIT 2
+                        ];
+                        
+                        if (users.isEmpty()) {
+                            result.isValid = false;
+                            result.errorMessage = 'No active user found with email or username "' + searchValue + '".';
+                            return result;
+                        } else if (users.size() > 1) {
+                            result.isValid = false;
+                            result.errorMessage = 'Multiple users found matching "' + searchValue + '". Please be more specific.';
+                            result.ambiguousUsers = new List<String>();
+                            for (User u : users) {
+                                result.ambiguousUsers.add(u.Name + ' (' + u.Username + ')');
+                            }
+                            return result;
+                        } else {
+                            targetUser = users[0];
+                            System.debug('Found user by partial match: ' + searchValue);
+                        }
+                    }
+                }
+            }
+            
+            // Priority 3: Name (exact or partial match)
+            if (targetUser == null && String.isNotBlank(analysis.targetUserName)) {
+                // Try exact Name match first
+                List<User> users = [
+                    SELECT Id, Name, Email, Username, IsActive 
+                    FROM User 
+                    WHERE Name = :analysis.targetUserName 
+                    AND IsActive = true 
+                    LIMIT 1
+                ];
+                
+                if (!users.isEmpty()) {
+                    targetUser = users[0];
+                    System.debug('Found user by exact Name: ' + analysis.targetUserName);
+                } else {
+                    // Try partial name match (first name or last name)
+                    String likePattern = '%' + analysis.targetUserName + '%';
+                    users = [
+                        SELECT Id, Name, Email, Username, IsActive 
+                        FROM User 
+                        WHERE Name LIKE :likePattern 
+                        AND IsActive = true 
+                        ORDER BY Name
+                        LIMIT 2 // Get 2 to detect ambiguity
+                    ];
+                    
+                    if (users.isEmpty()) {
+                        result.isValid = false;
+                        result.errorMessage = 'No active user found with name "' + analysis.targetUserName + '".';
+                        return result;
+                    } else if (users.size() > 1) {
+                        result.isValid = false;
+                        result.errorMessage = 'Multiple users found matching "' + analysis.targetUserName + '". Please be more specific (use full name or username).';
+                        result.ambiguousUsers = new List<String>();
+                        for (User u : users) {
+                            result.ambiguousUsers.add(u.Name + ' (' + u.Username + ')');
+                        }
+                        return result;
+                    } else {
+                        targetUser = users[0];
+                        System.debug('Found user by partial Name: ' + analysis.targetUserName);
+                    }
+                }
+            }
+            
+            // If we found a user, populate result
+            if (targetUser != null) {
+                result.isValid = true;
+                result.userId = targetUser.Id;
+                result.userName = targetUser.Name;
+                result.userEmail = targetUser.Email;
+                result.username = targetUser.Username;
+                result.isCurrentUser = (targetUser.Id == UserInfo.getUserId());
+                
+                System.debug('✅ Target user validated: ' + targetUser.Name + ' (' + targetUser.Username + ')');
+                return result;
+            }
+            
+            // Should not reach here, but just in case
+            result.isValid = false;
+            result.errorMessage = 'Unable to identify the user. Please provide a valid email, username, or full name.';
+            
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Error validating target user: ' + e.getMessage());
+            result.isValid = false;
+            result.errorMessage = 'Error validating user: ' + e.getMessage();
+        }
+        
+        return result;
+    }
+
+    /**
+     * @description Inner class for user validation result
+     */
+    private class UserValidationResult {
+        public Boolean isValid;
+        public Id userId;
+        public String userEmail;
+        public String username;  
+        public Boolean isCurrentUser;
+        public String errorMessage;
+        public List<String> ambiguousUsers;
+        
+        public UserValidationResult() {
+            this.isValid = false;
+            this.isCurrentUser = false;
+            this.ambiguousUsers = new List<String>();
         }
     }
     

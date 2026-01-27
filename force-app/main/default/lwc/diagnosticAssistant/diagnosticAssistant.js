@@ -76,13 +76,45 @@ export default class DiagnosticAssistant extends LightningElement {
         this.errorMessage = '';
 
         try {
-            const aiReply = await this.callApex(userMessage);
-            // If callApex returns nothing (Apex missing), fallback to mock
-            const replyText = aiReply || await this.simulateAPICall(userMessage);
+            const result = await this.callApex(userMessage);
+            
+            // Handle different response formats
+            let replyText = '';
+            
+            if (!result) {
+                // No result - use fallback
+                replyText = await this.simulateAPICall(userMessage);
+            } else if (typeof result === 'string') {
+                // Direct string response
+                replyText = result;
+            } else if (result.message) {
+                // Response wrapper with message property
+                replyText = result.message;
+            } else if (result.error) {
+                // Error response
+                this.showError(result.error);
+                return;
+            } else {
+                // Unknown format - stringify it
+                replyText = JSON.stringify(result);
+            }
+            
             this.addMessage('ai', replyText);
+            
         } catch (error) {
             console.error('Error processing message:', error);
-            const errMsg = error?.body?.message || error?.message || 'Unable to process your message. Please try again.';
+            
+            // Extract error message safely
+            let errMsg = 'Unable to process your message. Please try again.';
+            
+            if (error && error.body && error.body.message) {
+                errMsg = error.body.message;
+            } else if (error && error.message) {
+                errMsg = error.message;
+            } else if (typeof error === 'string') {
+                errMsg = error;
+            }
+            
             this.showError(errMsg);
         } finally {
             this.isProcessing = false;
@@ -136,19 +168,31 @@ export default class DiagnosticAssistant extends LightningElement {
     // Call Apex controller; fallback to simulated response if Apex not available
     async callApex(userMessage) {
         try {
-            // Attempt to call Apex method wired in SFAI-17
-            const result = await processUserMessage({ message: userMessage, sessionId: this.sessionId });
+            // Attempt to call Apex method
+            const result = await processUserMessage({ 
+                message: userMessage, 
+                sessionId: this.sessionId 
+            });
+            
+            console.log('Apex Response:', result);
+            
             // If backend returns a sessionId, persist it
             if (result && result.sessionId) {
                 this.sessionId = result.sessionId;
             }
-            // Normalize return value
-            if (result && result.message) {
-                return result.message;
+            
+            // Check if there's an error in the response
+            if (result && result.success === false && result.error) {
+                // This is an error response from Apex
+                throw new Error(result.error);
             }
+            
+            // Return the result - let handleSendMessage handle the format
             return result;
+            
         } catch (error) {
-            // Re-throw so caller can handle and fallback if needed
+            console.error('Apex call failed:', error);
+            // Re-throw so caller can handle
             throw error;
         }
     }
@@ -205,11 +249,21 @@ export default class DiagnosticAssistant extends LightningElement {
     }
 
     addMessage(role, content, isError = false) {
+        // Ensure content is a string
+        if (content === null || content === undefined) {
+            content = '';
+        }
+        
+        // Convert to string if it's an object
+        if (typeof content === 'object') {
+            content = JSON.stringify(content);
+        }
+        
         const isAI = role === 'ai';
         const message = {
             id: this.generateMessageId(),
-            text: isAI ? undefined : content,
-            html: isAI ? this.formatAIResponse(content) : undefined,
+            text: isAI ? undefined : String(content),
+            html: isAI ? this.formatAIResponse(String(content)) : undefined,
             isAI: isAI,
             isError: isError,
             timestamp: this.formatTimestamp(new Date()),
@@ -244,8 +298,13 @@ export default class DiagnosticAssistant extends LightningElement {
     }
 
     formatAIResponse(text) {
-        // Basic markdown to HTML conversion
-        let html = text;
+        // Ensure text is a string
+        if (!text) {
+            return '';
+        }
+        
+        // Convert to string if it's not already
+        let html = String(text);
         
         // Bold: **text** to <strong>text</strong>
         html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
